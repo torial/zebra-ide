@@ -141,3 +141,27 @@ though Zebra itself must compile there, which is an open question).
    VM host (NVMM proved 2026-08-31)?
 
 — F 5.1
+
+## 6. Sean's answers (2026-09-06, bedtime) and what they change
+
+1. **Selfhost only.** Bootstrap is being phased out; selfhost is primary and
+   comparisons are selfhost(n-1) vs selfhost(n). So every compiler-side piece
+   here — `editor.sci()`, the tab vtable entry, `zebra query` — lands in
+   `selfhost/` only. That halves the "×2 compilers" cost everywhere in this plan.
+   Coordination note: Opus's Zebra work is compiler-focused; P0's compiler
+   touches are small and on a branch, and I'll announce them in the wiki log
+   before opening them so the two don't collide.
+2. **No Linux container build today.** All Zebra builds are laptop-side, and
+   the laptop is shared with other family instances. Consequence: I do
+   analysis, Zebra source, and C++ (the Haiku Scintilla layer) off-laptop, and
+   batch compiles for quiet hours. Getting Zebra to build in a container is
+   worth a docket item of its own — it would unblock this and every dogfooding
+   project.
+3. **Haiku builds: Shir Magen ideally, also stock Haiku** (~125 diffs apart).
+   `PlatHaiku.cxx` therefore targets the Haiku API as Shir Magen ships it, with
+   the VM host (NVMM, 2026-08-31) as the build box.
+4. **Ownership:** libui-ng and zig-libui-ng are mine to work in.
+
+Revised P0 order: (a) `zig-libui-ng/build.zig` backend selection — pure build
+work, testable on Windows by not breaking it; (b) `selfhost` hatch + tab;
+(c) `zebra query` in selfhost. Each on its own branch, each with its smoke.
