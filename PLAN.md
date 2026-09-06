@@ -165,3 +165,38 @@ though Zebra itself must compile there, which is an open question).
 Revised P0 order: (a) `zig-libui-ng/build.zig` backend selection — pure build
 work, testable on Windows by not breaking it; (b) `selfhost` hatch + tab;
 (c) `zebra query` in selfhost. Each on its own branch, each with its smoke.
+
+## 7. Revision after reading the compiler (2026-09-06, late): the IDE is an LSP client
+
+I planned a `zebra query --json` mode. **Zebra already has a Language Server**
+(`zebra lsp`, in `selfhost/main.zbr`): diagnostics, documentSymbol, hover,
+definition, completion, signatureHelp, formatting — a declaration-index LSP
+(name-based, per open document), not a resolver-backed one, but exactly the
+"simple IDE" tier. So:
+
+- **Navigation / refactoring come from LSP, not a bespoke query mode.** Tonight
+  I added `textDocument/references` and `textDocument/rename` (name-based,
+  whole-identifier, comments and strings skipped; rename refuses non-identifier
+  names) on branch `lsp-references` in zebra-language, with
+  `tools/lsp_protocol_smoke.py` as the control (6/6; each control seen red first).
+- **C and Zig get the same treatment for free:** `clangd` and `zls` are LSP
+  servers. The IDE is a small **LSP client host** — three servers over stdio,
+  one client, one UI. That is a much better decomposition than three ad-hoc
+  integrations, and the C/Zig sides are someone else's well-tested code.
+- Diagnostics also arrive over LSP (`publishDiagnostics`) instead of parsing
+  compiler stderr — keep the `zig cc` decree for *builds*, but markers come from
+  the servers.
+- **Found and fixed on the way:** BUG-334 — the runtime's `sys.readLine`/
+  `sys.readBytes` created a fresh buffered stdin reader per call, discarding
+  read-ahead; on a POSIX pipe `zebra lsp` swallowed the request and answered
+  nothing. Fixed with one shared reader. The diagnostics smoke never saw it
+  because it doesn't exercise the server's stdio.
+
+**P0 status:** (b) hatch + tab — not started (needs a GUI build; laptop-side);
+(c) done as LSP references/rename instead of `zebra query`; (a) `build.zig`
+backend selection — not started. **New P0 item:** the LSP client (`src/lsp.zbr`):
+JSON-RPC framing over `sys.spawn` stdio, request/notification routing, three
+server configs. Testable headless against `zebra lsp` in the container.
+
+Docket (from tonight): scope-aware references via the Resolver (v2);
+`workspace/symbol`; multi-file open-document set = the project's `.zbr` files.

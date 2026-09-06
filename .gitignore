@@ -2,3 +2,5 @@ zig-out/
 .zig-cache/
 *.exe
 *.pdb
+zl.tgz
+_stage/
