@@ -27,11 +27,13 @@
 #   * uiTab has no rename, so the dirty flag lives in the window's status line;
 #   * no keyboard shortcuts: libui exposes no key events for Scintilla, and
 #     Scintilla's own SCI_ASSIGNCMDKEY only maps keys to Scintilla commands;
-#   * change detection is polling (getText compare per tick) until the WM_NOTIFY
-#     shim lands in libui_scintilla/win.cxx (then SCN_MODIFIED drives it).
+#   * events arrive through the notify bridge (editor.takeModified /
+#     takeCharAdded / takeMarginClick, fed by uiScintillaOnNotify in
+#     zig-libui-ng's libui_scintilla/win.cxx); the text compare is kept as a
+#     1-in-10-ticks fallback so the tui backend (no events) still works.
 
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
-use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARGIN_SYMBOL, ANNOTATION_BOXED
+use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT
 
 # ── Constants of this program ──────────────────────────────────────────────
 const INDIC_ERROR: int = 8          # indicator slots 8..31 are free for containers
@@ -41,6 +43,7 @@ const MARKER_WARN: int = 2
 const MARGIN_MARKS: int = 1         # margin 0 = line numbers (set by the editor); 1 = ours
 const DIRTY_TICKS: int = 3          # ticks (~100 ms each) of quiet before didChange
 const STYLE_ANNOT: int = 40         # style slot for inline diagnostic annotations
+const MARKER_BOOKMARK: int = 3      # toggled by clicking the marker margin
 
 class Model
     var editor: CodeEditor? = nil
@@ -68,6 +71,7 @@ class Model
     var errors: int = 0
     var warnings: int = 0
     var overlay_ready: bool = false      # Scintilla exists only after the first render
+    var tick_n: int = 0
 
     cue init()
         .ref_lines = List(int)()
@@ -83,6 +87,7 @@ union Msg
     rename
     jump_ref
     jump_sym
+    next_bookmark
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def toUri(p: str): str
@@ -127,7 +132,10 @@ def configureOverlay(ed: CodeEditor)
     ed.sci(SCI_MARKERSETFORE, MARKER_WARN, 0x4fb8e0)
     ed.sci(SCI_SETMARGINTYPEN, MARGIN_MARKS, SC_MARGIN_SYMBOL)
     ed.sci(SCI_SETMARGINWIDTHN, MARGIN_MARKS, 16)
-    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 6)            # bits for markers 1 and 2
+    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 14)           # bits for markers 1, 2, 3
+    ed.sci(SCI_SETMARGINSENSITIVEN, MARGIN_MARKS, 1)       # clicks arrive as SCN_MARGINCLICK
+    ed.sci(SCI_MARKERDEFINE, MARKER_BOOKMARK, SC_MARK_BOOKMARK)
+    ed.sci(SCI_MARKERSETBACK, MARKER_BOOKMARK, 0xc2b656)
     ed.sci(SCI_ANNOTATIONSETVISIBLE, ANNOTATION_BOXED, 0)
     ed.sci(SCI_STYLESETFORE, STYLE_ANNOT, 0x9a9ad0)        # #d09a9a
     ed.sci(SCI_STYLESETBACK, STYLE_ANNOT, 0x2f2823)
@@ -274,6 +282,46 @@ def ideInit(): Model
         loadFile(m, args.at(1))
     return m
 
+def isBlockOpener(lang: str, prev: str): bool
+    var t: str = prev.trim()
+    if lang == "zebra"
+        for kw in ["def ", "if ", "else", "elif ", "while ", "for ", "class ", "struct ", "union ", "branch ", "on ", "using ", "cue ", "test ", "interface ", "enum ", "capture", "namespace "]
+            if t.startsWith(kw) or t == kw.trim()
+                return true
+        return false
+    return t.endsWith("{") or t.endsWith("(")
+
+# On Enter: copy the previous line's indentation, plus one level after a block opener.
+# Runs from the notify bridge (SCN_CHARADDED '\n'), so it costs nothing while idle.
+def autoIndent(m: Model)
+    var ed: CodeEditor = m.editor!
+    var line: int = cursorLine(ed)
+    if line <= 0
+        return
+    var text: str = ed.getText()
+    var prev: str = ""
+    var i: int = 0
+    for l in text.split("\n")          # BUG-336: split().at() leaks Zig, so iterate
+        if i == line - 1
+            prev = l
+        i = i + 1
+    var indent: str = ""
+    var k: int = 0
+    while k < prev.len and (prev[k..k+1] == " " or prev[k..k+1] == "\t")
+        indent = indent + prev[k..k+1]
+        k = k + 1
+    if isBlockOpener(ed.getLanguage(), prev)
+        indent = indent + "    "
+    if indent != ""
+        ed.sciStr(SCI_REPLACESEL, 0, indent)
+
+def toggleBookmark(ed: CodeEditor, line: int)
+    var mask: int = ed.sci(SCI_MARKERGET, line, 0)
+    if (mask / 8) % 2 == 1               # bit 3 set → marker 3 present
+        ed.sci(SCI_MARKERDELETE, line, MARKER_BOOKMARK)
+    else
+        ed.sci(SCI_MARKERADD, line, MARKER_BOOKMARK)
+
 # Every ~100 ms: poll the server, push edits after a quiet spell, apply replies.
 def tick(m: Model)
     if not m.overlay_ready
@@ -281,6 +329,14 @@ def tick(m: Model)
         # the native control exists and accepts messages (on tui they are no-ops).
         configureOverlay(m.editor!)
         m.overlay_ready = true
+    m.tick_n = m.tick_n + 1
+    # events from the notify bridge (no-ops on tui)
+    if m.editor!.takeCharAdded() == 10
+        autoIndent(m)
+    var clicked: int = m.editor!.takeMarginClick()
+    if clicked >= 0
+        toggleBookmark(m.editor!, clicked)
+    var modified: bool = m.editor!.takeModified()
     if m.lsp == nil
         return
     var c: LspClient = m.lsp!
@@ -291,17 +347,18 @@ def tick(m: Model)
         m.diag_seen = -1
     if m.uri == ""
         return
-    var now: str = m.editor!.getText()
-    if now != m.pending_text
-        m.pending_text = now
-        m.quiet = 0
-    else if now != m.last_sent
-        m.quiet = m.quiet + 1
-        if m.quiet >= DIRTY_TICKS
-            m.version = m.version + 1
-            c.didChange(m.uri, m.version, now)
-            m.last_sent = now
+    if modified or m.tick_n % 10 == 0 or m.pending_text != m.last_sent
+        var now: str = m.editor!.getText()
+        if now != m.pending_text
+            m.pending_text = now
             m.quiet = 0
+        else if now != m.last_sent
+            m.quiet = m.quiet + 1
+            if m.quiet >= DIRTY_TICKS
+                m.version = m.version + 1
+                c.didChange(m.uri, m.version, now)
+                m.last_sent = now
+                m.quiet = 0
     if c.diagnostics.get(m.uri) as ds
         if ds.len != m.last_diag_count or m.diag_seen != m.diag_applied
             applyDiagnostics(m, ds)
@@ -397,6 +454,14 @@ def update(m: Model, msg: Msg): Model
             if i < m.sym_lines.len
                 gotoLineCol(m.editor!, m.sym_lines.at(i), 0)
             return m
+        on Msg.next_bookmark
+            var from: int = cursorLine(m.editor!) + 1
+            var nxt: int = m.editor!.sci(SCI_MARKERNEXT, from, 8)
+            if nxt < 0
+                nxt = m.editor!.sci(SCI_MARKERNEXT, 0, 8)
+            if nxt >= 0
+                gotoLineCol(m.editor!, nxt, 0)
+            return m
 
 def view(g: Gui, m: Model)
     g.send(Msg.tick)
@@ -417,6 +482,8 @@ def view(g: Gui, m: Model)
             m.new_name = g.input("new name", m.new_name)
             if g.button("Rename")
                 g.send(Msg.rename)
+            if g.button("Next bookmark")
+                g.send(Msg.next_bookmark)
         g.separator()
         using g.hbox("##body", true)
             m.editor!.render(g, "##code", 0, 0)
