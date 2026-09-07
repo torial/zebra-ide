@@ -1,0 +1,252 @@
+# dap.zbr — a Debug Adapter Protocol client for `zebra debug` (plan P3, half two).
+#
+#   zebra debug <file.zbr>   compiles the program with debug info, starts lldb-dap
+#   and relays DAP over its own stdio, remapping .zbr↔.zig lines in setBreakpoints
+#   (ide→lldb) and stackTrace (lldb→ide). This client speaks to that relay over
+#   sys.spawnPiped through transport.zbr; it never blocks — poll() from a tick.
+#
+# Session shape (all learned by probing the real relay, /tmp/dbg/dapc.py 09-07):
+#   initialize → launch{program: <stem exe in cwd>} → setBreakpoints{source.path:
+#   the .zbr, breakpoints:[{line}]} → configurationDone → event stopped{threadId}
+#   → stackTrace{threadId} (frames carry the .zbr path + line) → next/stepIn/
+#   stepOut/continue{threadId} → … → event terminated/exited → disconnect.
+# Known limits of the relay, stated: the setBreakpoints RESPONSE still names the
+# .zig source (only stackTrace is remapped back), so keep your own breakpoint
+# list and ignore that source; lldb has no Zig language plugin, so Locals come
+# back EMPTY ("Inspection of frame variables will be limited") — Globals and
+# Registers scopes work. Variables are therefore best-effort here.
+
+use transport exposing StdioTransport
+
+struct DapFrame
+    var id: int
+    var name: str
+    var path: str
+    var line: int          # 1-based, .zbr line after the relay's remap
+    var col: int
+
+struct DapVar
+    var name: str
+    var value: str
+    var kind: str
+
+def jsonEsc(s: str): str
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+class DapClient
+    var io: StdioTransport
+    var next_seq: int = 1
+    var pending: HashMap(int, str)          # seq -> command
+    var replies: HashMap(int, str)          # seq -> raw response body
+    var events: List(str)                   # raw event bodies not consumed by state below
+    var state: str = "idle"                 # idle | starting | running | stopped | ended
+    var thread_id: int = 0
+    var stop_reason: str = ""
+    var frames: List(DapFrame)
+    var output: str = ""                    # program/adapter output events, appended
+    var exit_code: int = -1
+    var initialized_evt: bool = false
+    var program: str = ""
+
+    cue init()
+        .io = StdioTransport()
+        .pending = HashMap(int, str)()
+        .replies = HashMap(int, str)()
+        .events = List(str)()
+        .frames = List(DapFrame)()
+
+    def log(): List(str)
+        return .io.log
+
+    # Start `zebra debug <src>`; `program` is the exe the relay builds (stem in cwd).
+    def start(zebra: str, src: str, program: str): bool
+        var argv: List(str) = List(str)()
+        argv.add(zebra)
+        argv.add("debug")
+        argv.add(src)
+        .program = program
+        if not .io.start("dap", argv)
+            return false
+        .state = "starting"
+        return true
+
+    def running(): bool
+        return .io.running()
+
+    def request(command: str, args_json: str): int
+        var seq: int = .next_seq
+        .next_seq = .next_seq + 1
+        var body: str = "{\"seq\":" + seq.toString() + ",\"type\":\"request\",\"command\":\"" + command + "\",\"arguments\":" + args_json + "}"
+        if .io.send(body)
+            .pending.put(seq, command)
+            return seq
+        return 0
+
+    # ── The session, step by step ────────────────────────────────────────────
+    def initialize(): int
+        return .request("initialize", "{\"clientID\":\"zebra-ide\",\"adapterID\":\"lldb\",\"linesStartAt1\":true,\"columnsStartAt1\":true,\"pathFormat\":\"path\"}")
+
+    def launch(): int
+        return .request("launch", "{\"program\":\"" + jsonEsc(.program) + "\",\"stopOnEntry\":false}")
+
+    def setBreakpoints(src_path: str, lines: List(int)): int
+        var sb = StringBuilder()
+        var first: bool = true
+        for l in lines
+            if not first
+                sb.append(",")
+            first = false
+            sb.append("{\"line\":" + l.toString() + "}")
+        return .request("setBreakpoints", "{\"source\":{\"path\":\"" + jsonEsc(src_path) + "\"},\"breakpoints\":[" + sb.build() + "]}")
+
+    def configurationDone(): int
+        return .request("configurationDone", "{}")
+
+    def threadArg(): str
+        return "{\"threadId\":" + .thread_id.toString() + "}"
+
+    def continue_(): int
+        .state = "running"
+        return .request("continue", .threadArg())
+
+    def next(): int
+        .state = "running"
+        return .request("next", .threadArg())
+
+    def stepIn(): int
+        .state = "running"
+        return .request("stepIn", .threadArg())
+
+    def stepOut(): int
+        .state = "running"
+        return .request("stepOut", .threadArg())
+
+    def pause(): int
+        return .request("pause", .threadArg())
+
+    def stackTrace(): int
+        return .request("stackTrace", .threadArg())
+
+    def scopes(frame_id: int): int
+        return .request("scopes", "{\"frameId\":" + frame_id.toString() + "}")
+
+    def variables(ref: int): int
+        return .request("variables", "{\"variablesReference\":" + ref.toString() + "}")
+
+    def disconnect(): int
+        return .request("disconnect", "{\"terminateDebuggee\":true}")
+
+    # ── Receiving ────────────────────────────────────────────────────────────
+    # Drain the relay; file replies by seq, fold the events that change session
+    # state (stopped/continued/terminated/exited/output/initialized), keep the rest.
+    def poll(): int
+        var n: int = 0
+        for body in .io.poll()
+            .file(body)
+            n = n + 1
+        if .state != "idle" and .state != "ended" and not .io.running()
+            .state = "ended"
+        return n
+
+    def file(body: str)
+        var jv = Json.parse(body)
+        if jv == nil
+            .io.log.add("poll: unparseable message dropped")
+            return
+        var j = jv!
+        var typ: str = j.getStr("type")
+        if typ == "response"
+            var rs: int = j.getInt("request_seq")
+            .replies.put(rs, body)
+            .pending.remove(rs)
+            return
+        if typ == "event"
+            var ev: str = j.getStr("event")
+            if ev == "initialized"
+                .initialized_evt = true
+            else if ev == "stopped"
+                .state = "stopped"
+                var b = j.getObj("body")
+                .thread_id = b.getInt("threadId")
+                .stop_reason = b.getStr("reason")
+                .frames = List(DapFrame)()          # stale until the next stackTrace
+            else if ev == "continued"
+                .state = "running"
+            else if ev == "terminated"
+                .state = "ended"
+            else if ev == "exited"
+                .state = "ended"
+                .exit_code = j.getObj("body").getInt("exitCode")
+            else if ev == "output"
+                .output = .output + j.getObj("body").getStr("output")
+            else if ev == "process" or ev == "thread" or ev == "module" or ev == "breakpoint"
+                pass
+            else
+                .events.add(body)
+            return
+        .events.add(body)
+
+    def takeReply(seq: int): JsonValue?
+        if .replies.get(seq) as r
+            .replies.remove(seq)
+            return Json.parse(r)
+        return nil
+
+    # For tests and one-shot tools; the GUI uses poll()+takeReply() from its tick.
+    def waitReply(seq: int, timeout_ms: int): JsonValue?
+        var waited: int = 0
+        while waited <= timeout_ms
+            .poll()
+            if .takeReply(seq) as r
+                return r
+            if not .running()
+                return nil
+            sys.sleep(20)
+            waited = waited + 20
+        return nil
+
+    def waitState(s: str, timeout_ms: int): bool
+        var waited: int = 0
+        while waited <= timeout_ms
+            .poll()
+            if .state == s
+                return true
+            if .state == "ended" and s != "ended"
+                return false
+            sys.sleep(20)
+            waited = waited + 20
+        return false
+
+    # Decode a stackTrace reply into .frames (top first). Returns the count.
+    def readFrames(reply: JsonValue): int
+        .frames = List(DapFrame)()
+        var res = reply.at("body")
+        if res.isNull()
+            return 0
+        for f in res.getList("stackFrames")
+            var path: str = ""
+            if not f.at("source").isNull()
+                var src = f.getObj("source")
+                if not src.at("path").isNull()
+                    path = src.getStr("path")
+            var col: int = 0
+            if not f.at("column").isNull()
+                col = f.getInt("column")
+            .frames.add(DapFrame(id: f.getInt("id"), name: f.getStr("name"), path: path, line: f.getInt("line"), col: col))
+        return .frames.len
+
+    def readVariables(reply: JsonValue): List(DapVar)
+        var out: List(DapVar) = List(DapVar)()
+        var res = reply.at("body")
+        if res.isNull()
+            return out
+        for v in res.getList("variables")
+            var kind: str = ""
+            if not v.at("type").isNull()
+                kind = v.getStr("type")
+            out.add(DapVar(name: v.getStr("name"), value: v.getStr("value"), kind: kind))
+        return out
+
+    def stop()
+        .io.stop()
+        .state = "ended"

@@ -37,7 +37,8 @@
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
 use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
 use gates exposing Manifest, GateSpec, GateRun, Diag, loadManifest, joinPath
-use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER
+use dap exposing DapClient, DapFrame, DapVar
+use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW
 
 # ── Constants of this program ──────────────────────────────────────────────
 const INDIC_ERROR: int = 8          # indicator slots 8..31 are free for containers
@@ -47,7 +48,9 @@ const MARKER_WARN: int = 2
 const MARGIN_MARKS: int = 1         # margin 0 = line numbers (set by the editor); 1 = ours
 const DIRTY_TICKS: int = 3          # ticks (~100 ms each) of quiet before didChange
 const STYLE_ANNOT: int = 40         # style slot for inline diagnostic annotations
-const MARKER_BOOKMARK: int = 3      # toggled by clicking the marker margin
+const MARKER_BOOKMARK: int = 3      # "Toggle bookmark" button
+const MARKER_BREAK: int = 0         # toggled by clicking the marker margin; sent to the debugger
+const MARKER_CURRENT: int = 4       # the debugger's current line
 
 class Model
     var editor: CodeEditor? = nil
@@ -84,6 +87,14 @@ class Model
     var pane_diag_idx: List(int)         # per pane line: index into pane_diag or -1
     var gates_failed: int = 0
     var gates_done: int = 0
+    # debugger (dap.zbr): the session, the frames pane, and what we asked for
+    var dbg: DapClient? = nil
+    var dbg_pane: CodeEditor? = nil
+    var dbg_frames_id: int = 0
+    var dbg_launched: bool = false
+    var dbg_src: str = ""
+    var dbg_last_state: str = ""
+    var dbg_output_len: int = 0
 
     cue init()
         .ref_lines = List(int)()
@@ -112,6 +123,14 @@ union Msg
     run_gates
     reload_manifest
     jump_diag
+    toggle_bookmark
+    debug_start
+    debug_continue
+    debug_next
+    debug_step_in
+    debug_step_out
+    debug_stop
+    jump_frame
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def cursorLine(ed: CodeEditor): int
@@ -141,10 +160,16 @@ def configureOverlay(ed: CodeEditor)
     ed.sci(SCI_MARKERSETFORE, MARKER_WARN, 0x4fb8e0)
     ed.sci(SCI_SETMARGINTYPEN, MARGIN_MARKS, SC_MARGIN_SYMBOL)
     ed.sci(SCI_SETMARGINWIDTHN, MARGIN_MARKS, 16)
-    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 14)           # bits for markers 1, 2, 3
+    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 31)           # bits for markers 0..4
     ed.sci(SCI_SETMARGINSENSITIVEN, MARGIN_MARKS, 1)       # clicks arrive as SCN_MARGINCLICK
     ed.sci(SCI_MARKERDEFINE, MARKER_BOOKMARK, SC_MARK_BOOKMARK)
     ed.sci(SCI_MARKERSETBACK, MARKER_BOOKMARK, 0xc2b656)
+    ed.sci(SCI_MARKERDEFINE, MARKER_BREAK, SC_MARK_CIRCLE)
+    ed.sci(SCI_MARKERSETBACK, MARKER_BREAK, 0x3030d0)      # red dot
+    ed.sci(SCI_MARKERSETFORE, MARKER_BREAK, 0x3030d0)
+    ed.sci(SCI_MARKERDEFINE, MARKER_CURRENT, SC_MARK_ARROW)
+    ed.sci(SCI_MARKERSETBACK, MARKER_CURRENT, 0x40d0f0)    # yellow arrow
+    ed.sci(SCI_MARKERSETFORE, MARKER_CURRENT, 0x40d0f0)
     ed.sci(SCI_ANNOTATIONSETVISIBLE, ANNOTATION_BOXED, 0)
     ed.sci(SCI_STYLESETFORE, STYLE_ANNOT, 0x9a9ad0)        # #d09a9a
     ed.sci(SCI_STYLESETBACK, STYLE_ANNOT, 0x2f2823)
@@ -367,6 +392,9 @@ def ideInit(): Model
     m.gate_pane = CodeEditor.forFile("gates.txt")
     m.gate_pane!.setReadOnly(true)
     m.gate_pane!.setText("(build and gate output appears here)")
+    m.dbg_pane = CodeEditor.forFile("debug.txt")
+    m.dbg_pane!.setReadOnly(true)
+    m.dbg_pane!.setText("(debugger: click the margin for a breakpoint, then Debug)")
     loadProject(m)
     startLsp(m)
     var args: List(str) = sys.args()
@@ -409,12 +437,32 @@ def autoIndent(m: Model)
     if indent != ""
         ed.sciStr(SCI_REPLACESEL, 0, indent)
 
-def toggleBookmark(ed: CodeEditor, line: int)
+def markerBit(marker: int): int
+    var b: int = 1
+    var k: int = 0
+    while k < marker
+        b = b * 2
+        k = k + 1
+    return b
+
+def toggleMarker(ed: CodeEditor, line: int, marker: int)
     var mask: int = ed.sci(SCI_MARKERGET, line, 0)
-    if (mask / 8) % 2 == 1               # bit 3 set → marker 3 present
-        ed.sci(SCI_MARKERDELETE, line, MARKER_BOOKMARK)
+    if (mask / markerBit(marker)) % 2 == 1
+        ed.sci(SCI_MARKERDELETE, line, marker)
     else
-        ed.sci(SCI_MARKERADD, line, MARKER_BOOKMARK)
+        ed.sci(SCI_MARKERADD, line, marker)
+
+# 1-based lines carrying `marker` in the current document (SCI_MARKERNEXT walks them).
+def markerLines(ed: CodeEditor, marker: int): List(int)
+    var out: List(int) = List(int)()
+    var from: int = 0
+    while true
+        var l: int = ed.sci(SCI_MARKERNEXT, from, markerBit(marker))
+        if l < 0
+            break
+        out.add(l + 1)
+        from = l + 1
+    return out
 
 # Apply a rename's WorkspaceEdit everywhere it points: open buffers are edited in
 # their Scintilla documents (switching document pointers under the hood, view
@@ -553,6 +601,117 @@ def pollGates(m: Model)
             # live tail while it runs: keep the pane's last line as a heartbeat
             m.status = "running " + r.spec.name + " … " + (r.elapsed_ms / 1000).toString() + " s"
 
+# ── Debugger ─────────────────────────────────────────────────────────────────
+def dbgPane(m: Model, text: str)
+    m.dbg_pane!.setReadOnly(false)
+    m.dbg_pane!.setText(text)
+    m.dbg_pane!.setReadOnly(true)
+
+def debugStart(m: Model)
+    if m.dbg != nil
+        m.status = "a debug session is already running"
+        return
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    if zopt == nil
+        m.status = "ZEBRA_COMPILER not set — cannot start zebra debug"
+        return
+    if m.bufs.cur() as b
+        if not b.path.endsWith(".zbr")
+            m.status = "debug: the current buffer is not a .zbr program"
+            return
+        File.write(b.path, m.editor!.getText())          # debug what is on screen
+        m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+        var stem: str = baseName(b.path)
+        stem = stem[0..stem.len - 4]
+        var exe: str = sys.cwd() + "/" + stem              # zig build-exe writes to the cwd
+        if sys.getenv("OS") != nil
+            exe = exe + ".exe"
+        var c = DapClient()
+        if not c.start(zopt!, b.path, exe)
+            m.status = "could not start zebra debug"
+            return
+        m.dbg = c
+        m.dbg_src = b.path
+        m.dbg_launched = false
+        m.dbg_last_state = ""
+        m.dbg_output_len = 0
+        c.initialize()
+        dbgPane(m, "starting zebra debug (compiling with debug info)…")
+        m.status = "debug: starting"
+    else
+        m.status = "debug: no file open"
+
+def debugEnd(m: Model, why: str)
+    if m.dbg as c
+        c.stop()
+    m.dbg = nil
+    m.editor!.sci(SCI_MARKERDELETEALL, MARKER_CURRENT, 0)
+    m.status = "debug: " + why
+
+def showFrames(m: Model, c: DapClient)
+    var sb = StringBuilder()
+    sb.append("stopped: " + c.stop_reason + "\n")
+    for f in c.frames
+        sb.append(baseName(f.path) + ":" + f.line.toString() + "  " + f.name + "\n")
+    if c.output.len > 0
+        sb.append("── output ──\n" + c.output)
+    dbgPane(m, sb.build())
+    m.editor!.sci(SCI_MARKERDELETEALL, MARKER_CURRENT, 0)
+    if c.frames.len > 0
+        var top: DapFrame = c.frames.at(0)
+        if top.path != "" and top.path.endsWith(".zbr")
+            if m.bufs.cur() as cb
+                if not (cb.path.endsWith(top.path) or top.path.endsWith(baseName(cb.path)) and baseName(top.path) == baseName(cb.path))
+                    var p: str = top.path
+                    if not File.exists(p)
+                        p = joinPath(sys.cwd(), top.path)
+                    if File.exists(p)
+                        openFile(m, p)
+            gotoLineCol(m.editor!, top.line - 1, 0)
+            m.editor!.sci(SCI_MARKERADD, top.line - 1, MARKER_CURRENT)
+
+def pollDebug(m: Model)
+    if m.dbg as c
+        c.poll()
+        if c.state == "ended"
+            var tail: str = ""
+            if c.output.len > 0
+                tail = "\n── output ──\n" + c.output
+            dbgPane(m, "session ended (exit " + c.exit_code.toString() + ")" + tail)
+            debugEnd(m, "ended, exit " + c.exit_code.toString())
+            return
+        # after initialize: launch, breakpoints, configurationDone — once
+        if not m.dbg_launched and c.initialized_evt == false
+            var seqs: List(int) = List(int)()
+            # the initialize reply is what tells us the relay is alive; find it
+            var got_init: bool = false
+            for k in c.replies.keys()
+                if c.takeReply(k) as r
+                    if r.getStr("command") == "initialize"
+                        got_init = true
+            if got_init
+                c.launch()
+                c.setBreakpoints(m.dbg_src, markerLines(m.editor!, MARKER_BREAK))
+                c.configurationDone()
+                m.dbg_launched = true
+                m.status = "debug: launched"
+        if c.state == "stopped" and m.dbg_last_state != "stopped"
+            m.dbg_last_state = "stopped"
+            m.dbg_frames_id = c.stackTrace()
+        if c.state == "running" and m.dbg_last_state != "running"
+            m.dbg_last_state = "running"
+            m.editor!.sci(SCI_MARKERDELETEALL, MARKER_CURRENT, 0)
+            m.status = "debug: running"
+        if m.dbg_frames_id != 0
+            if c.takeReply(m.dbg_frames_id) as r
+                m.dbg_frames_id = 0
+                c.readFrames(r)
+                showFrames(m, c)
+                m.status = "debug: stopped (" + c.stop_reason + ")"
+        if c.output.len != m.dbg_output_len and c.state == "running"
+            m.dbg_output_len = c.output.len
+            dbgPane(m, "running…\n── output ──\n" + c.output)
+
 # Every ~100 ms: poll the server, push edits after a quiet spell, apply replies.
 def tick(m: Model)
     if not m.overlay_ready
@@ -585,9 +744,14 @@ def tick(m: Model)
         autoIndent(m)
     var clicked: int = m.editor!.takeMarginClick()
     if clicked >= 0
-        toggleBookmark(m.editor!, clicked)
+        toggleMarker(m.editor!, clicked, MARKER_BREAK)
+        if m.dbg as dc0
+            if m.bufs.cur() as cb0
+                if dc0.state == "stopped"
+                    dc0.setBreakpoints(cb0.path, markerLines(m.editor!, MARKER_BREAK))
     var modified: bool = m.editor!.takeModified()
     pollGates(m)
+    pollDebug(m)
     if m.lsp == nil
         return
     var c: LspClient = m.lsp!
@@ -727,6 +891,45 @@ def update(m: Model, msg: Msg): Model
             else
                 m.status = "no project loaded (zebra-ide.json)"
             return m
+        on Msg.toggle_bookmark
+            toggleMarker(m.editor!, cursorLine(m.editor!), MARKER_BOOKMARK)
+            return m
+        on Msg.debug_start
+            debugStart(m)
+            return m
+        on Msg.debug_continue
+            if m.dbg as c
+                if c.state == "stopped"
+                    c.continue_()
+            return m
+        on Msg.debug_next
+            if m.dbg as c
+                if c.state == "stopped"
+                    c.next()
+            return m
+        on Msg.debug_step_in
+            if m.dbg as c
+                if c.state == "stopped"
+                    c.stepIn()
+            return m
+        on Msg.debug_step_out
+            if m.dbg as c
+                if c.state == "stopped"
+                    c.stepOut()
+            return m
+        on Msg.debug_stop
+            if m.dbg as c
+                c.disconnect()
+            debugEnd(m, "stopped by user")
+            return m
+        on Msg.jump_frame
+            if m.dbg as c
+                var i: int = cursorLine(m.dbg_pane!) - 1     # line 0 is the "stopped:" header
+                if i >= 0 and i < c.frames.len
+                    var f: DapFrame = c.frames.at(i)
+                    if f.path.endsWith(".zbr")
+                        gotoLineCol(m.editor!, f.line - 1, 0)
+            return m
         on Msg.jump_diag
             var i: int = cursorLine(m.gate_pane!)
             if i < m.pane_diag_idx.len and m.pane_diag_idx.at(i) >= 0
@@ -817,6 +1020,23 @@ def view(g: Gui, m: Model)
                 g.send(Msg.run_gates)
             if g.button("Reload project")
                 g.send(Msg.reload_manifest)
+            if g.button("Bookmark")
+                g.send(Msg.toggle_bookmark)
+        using g.hbox("##debugbar", false)
+            if g.button("Debug")
+                g.send(Msg.debug_start)
+            if g.button("Continue")
+                g.send(Msg.debug_continue)
+            if g.button("Next")
+                g.send(Msg.debug_next)
+            if g.button("Step in")
+                g.send(Msg.debug_step_in)
+            if g.button("Step out")
+                g.send(Msg.debug_step_out)
+            if g.button("Stop")
+                g.send(Msg.debug_stop)
+            if g.button("Jump to frame")
+                g.send(Msg.jump_frame)
         # fixed tab row: MAX_TABS buttons keyed by slot, relabelled as files open
         using g.hbox("##tabs", false)
             var dirty_now: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
@@ -840,10 +1060,15 @@ def view(g: Gui, m: Model)
                 m.outline!.render(g, "##syms", 0, 0)
                 if g.button("Jump to symbol")
                     g.send(Msg.jump_sym)
-        g.text("Build / gates")
-        m.gate_pane!.render(g, "##gates", 0, 0)
-        if g.button("Jump to diagnostic")
-            g.send(Msg.jump_diag)
+        using g.hbox("##bottom", false)
+            using g.vbox("##gatesbox", true)
+                g.text("Build / gates")
+                m.gate_pane!.render(g, "##gates", 0, 0)
+                if g.button("Jump to diagnostic")
+                    g.send(Msg.jump_diag)
+            using g.vbox("##dbgbox", true)
+                g.text("Debugger")
+                m.dbg_pane!.render(g, "##dbg", 0, 0)
         g.separator()
         var dirty: str = ""
         if m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0

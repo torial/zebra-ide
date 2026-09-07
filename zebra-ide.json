@@ -5,6 +5,7 @@
     { "name": "sci_test",        "cmd": ["zebra", "sci_test.zbr"],        "cwd": "src", "expect": "sci_test: ok" },
     { "name": "buffers_test",    "cmd": ["zebra", "buffers_test.zbr"],    "cwd": "src", "expect": "buffers_test: ok" },
     { "name": "gates_test",      "cmd": ["zebra", "gates_test.zbr"],      "cwd": "src", "expect": "gates_test: ok", "timeout_ms": 300000 },
+    { "name": "dap_client_test", "cmd": ["zebra", "dap_client_test.zbr"], "cwd": "src", "expect": "dap_client_test: ", "timeout_ms": 600000 },
     { "name": "lsp_client_test", "cmd": ["zebra", "lsp_client_test.zbr"], "cwd": "src", "expect": "lsp_client_test: ok", "timeout_ms": 300000 }
   ]
 }

@@ -29,7 +29,7 @@ def main()
     # initialize
     var init_id: int = c.initialize("file:///tmp")
     var init = c.waitReply(init_id, 5000)
-    assert init != nil, "no initialize reply; log: " + c.log.join(" | ")
+    assert init != nil, "no initialize reply; log: " + c.log().join(" | ")
     assert c.initialized, "client did not mark itself initialized"
     assert c.capabilities.getBool("referencesProvider"), "server capabilities lack referencesProvider"
 

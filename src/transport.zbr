@@ -1,0 +1,84 @@
+# transport.zbr — Content-Length framed JSON over a child's stdio, shared by the
+# LSP client (lsp.zbr) and the DAP client (dap.zbr). Never blocks.
+#
+#   var t = StdioTransport()
+#   t.start(argv)                 # sys.spawnPiped
+#   t.send(body)                  # writes "Content-Length: N\r\n\r\n" + body
+#   for body in t.poll()          # complete frames that have arrived so far
+#   t.stop()                      # EOF, short grace, then kill
+#
+# Frames may arrive split across polls or several per poll; `buf` holds the
+# unconsumed tail and a frame is consumed only when its whole body is present.
+# Stderr from the child is collected into `log` (LSP/DAP servers chatter there).
+
+class StdioTransport
+    var name: str = ""
+    var proc: SysProcess? = nil
+    var buf: str = ""
+    var log: List(str)
+
+    cue init()
+        .log = List(str)()
+
+    def start(name: str, argv: List(str)): bool
+        .name = name
+        var p = sys.spawnPiped(argv)
+        if not p.isRunning()
+            .log.add("start: could not spawn " + argv.at(0))
+            return false
+        .proc = p
+        return true
+
+    def running(): bool
+        if .proc as p
+            return p.isRunning()
+        return false
+
+    def send(body: str): bool
+        if .proc as p
+            var ok = p.write("Content-Length: " + body.len.toString() + "\r\n\r\n" + body)
+            if not ok
+                .log.add("send: write failed (" + .name + ")")
+            return ok
+        return false
+
+    # Drain the pipes; return every complete frame body that has arrived.
+    def poll(): List(str)
+        var out: List(str) = List(str)()
+        if .proc as p
+            var chunk: str = p.readAvailable()
+            if chunk != ""
+                .buf = .buf + chunk
+            var err: str = p.readErrAvailable()
+            if err != ""
+                .log.add("stderr: " + err)
+        while true
+            var hdr_end: int = .buf.indexOf("\r\n\r\n")
+            if hdr_end < 0
+                break
+            var header: str = .buf[0..hdr_end]
+            var content_len: int = -1
+            for h in header.split("\r\n")
+                if h.startsWith("Content-Length:")
+                    content_len = h[15..h.len].trim().toInt()
+            if content_len < 0
+                .log.add("poll: frame without Content-Length dropped")
+                .buf = .buf[hdr_end + 4..(.buf.len)]
+                continue
+            var body_start: int = hdr_end + 4
+            if .buf.len < body_start + content_len
+                break
+            out.add(.buf[body_start..body_start + content_len])
+            .buf = .buf[body_start + content_len..(.buf.len)]
+        return out
+
+    def stop()
+        if .proc as p
+            p.closeStdin()
+            var ticks: int = 0
+            while p.isRunning() and ticks < 20
+                sys.sleep(50)
+                ticks = ticks + 1
+            if p.isRunning()
+                p.kill()
+        .proc = nil

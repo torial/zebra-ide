@@ -13,6 +13,9 @@
 #     unconsumed tail; a frame is consumed only when its whole body has arrived.
 #   * JSON is built by string concatenation with `jsonEscape`, matching the server
 #     side (selfhost/main.zbr does the same); parsed with Json.parse.
+#   * Framing lives in transport.zbr (StdioTransport), shared with the DAP client.
+
+use transport exposing StdioTransport
 
 struct LspDiagnostic
     var uri: str
@@ -65,14 +68,12 @@ def locationFrom(v: JsonValue): LspLocation
 
 class LspClient
     var name: str = ""
-    var proc: SysProcess? = nil
-    var buf: str = ""
+    var io: StdioTransport
     var next_id: int = 1
     var pending: HashMap(int, str)                     # id -> method
     var replies: HashMap(int, str)                     # id -> raw reply body (parsed on take)
     var diagnostics: HashMap(str, List(LspDiagnostic))
     var notifications: List(str)                       # raw bodies of other server->client messages
-    var log: List(str)                                 # transport-level events, newest last
     var initialized: bool = false
     var capabilities: JsonValue
 
@@ -81,30 +82,22 @@ class LspClient
         .replies = HashMap(int, str)()
         .diagnostics = HashMap(str, List(LspDiagnostic))()
         .notifications = List(str)()
-        .log = List(str)()
+        .io = StdioTransport()
         .capabilities = Json.object()
+
+    # transport-level events (spawn failures, server stderr), newest last
+    def log(): List(str)
+        return .io.log
 
     def start(name: str, argv: List(str)): bool
         .name = name
-        var p = sys.spawnPiped(argv)
-        if not p.isRunning()
-            .log.add("start: could not spawn " + argv.at(0))
-            return false
-        .proc = p
-        return true
+        return .io.start(name, argv)
 
     def running(): bool
-        if .proc as p
-            return p.isRunning()
-        return false
+        return .io.running()
 
     def send(body: str): bool
-        if .proc as p
-            var ok = p.write("Content-Length: " + body.len.toString() + "\r\n\r\n" + body)
-            if not ok
-                .log.add("send: write failed (" + .name + ")")
-            return ok
-        return false
+        return .io.send(body)
 
     # Fire a request; returns its id (0 if it could not be sent).
     def request(method: str, params_json: str): int
@@ -157,32 +150,7 @@ class LspClient
     # Drain the pipe and file every complete frame. Returns how many messages arrived.
     def poll(): int
         var count: int = 0
-        if .proc as p
-            var chunk: str = p.readAvailable()
-            if chunk != ""
-                .buf = .buf + chunk
-            var err: str = p.readErrAvailable()
-            if err != ""
-                .log.add("stderr: " + err)
-        while true
-            var hdr_end: int = .buf.indexOf("\r\n\r\n")
-            if hdr_end < 0
-                break
-            var header: str = .buf[0..hdr_end]
-            var content_len: int = -1
-            for h in header.split("\r\n")
-                if h.startsWith("Content-Length:")
-                    content_len = h[15..h.len].trim().toInt()
-            if content_len < 0
-                # Malformed header: drop it rather than wedge forever.
-                .log.add("poll: frame without Content-Length dropped")
-                .buf = .buf[hdr_end + 4..(.buf.len)]
-                continue
-            var body_start: int = hdr_end + 4
-            if .buf.len < body_start + content_len
-                break    # body not fully here yet
-            var body: str = .buf[body_start..body_start + content_len]
-            .buf = .buf[body_start + content_len..(.buf.len)]
+        for body in .io.poll()
             .file(body)
             count = count + 1
         return count
@@ -190,7 +158,7 @@ class LspClient
     def file(body: str)
         var jv = Json.parse(body)
         if jv == nil
-            .log.add("poll: unparseable message dropped")
+            .io.log.add("poll: unparseable message dropped")
             return
         var j = jv!
         if not j.at("id").isNull() and j.at("method").isNull()
@@ -254,12 +222,4 @@ class LspClient
         return out
 
     def stop()
-        if .proc as p
-            p.closeStdin()
-            var ticks: int = 0
-            while p.isRunning() and ticks < 20
-                sys.sleep(50)
-                ticks = ticks + 1
-            if p.isRunning()
-                p.kill()
-        .proc = nil
+        .io.stop()

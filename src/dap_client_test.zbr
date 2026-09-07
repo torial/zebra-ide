@@ -1,0 +1,55 @@
+# dap_client_test — the DAP client against the real `zebra debug` + lldb-dap, headless.
+#   zebra src/dap_client_test.zbr      (needs lldb-dap on PATH; ZEBRA_COMPILER is set by the compiler)
+# Controls: initialize reply, launch, a breakpoint on a .zbr line is hit, the stack
+# trace names the .zbr file and line, `next` moves to the following line, continue
+# hits the loop's breakpoint again, disconnect ends the session with no child left.
+# Skips (prints "skipped") when lldb-dap is not installed — that is an environment
+# fact, not a failure of the client.
+use dap exposing DapClient, DapFrame, DapVar
+
+def main()
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    assert zopt != nil, "ZEBRA_COMPILER must be set"
+    var zebra: str = zopt!
+    var probe = sys.run(["lldb-dap", "--help"])
+    if probe.exit_code != 0 and probe.exit_code != 1
+        var probe2 = sys.run(["lldb-dap.exe", "--help"])
+        if probe2.exit_code != 0 and probe2.exit_code != 1
+            print("dap_client_test: skipped (lldb-dap not on PATH)")
+            return
+    Dir.createAll("dap_tmp")
+    var src: str = "dap_tmp/hello_dbg.zbr"
+    File.write(src, "def square(n: int): int\n    var r: int = n * n\n    return r\n\ndef main()\n    var total: int = 0\n    var i: int = 1\n    while i <= 3\n        total = total + square(i)\n        i = i + 1\n    print(\"total=\" + total.toString())\n")
+    # zig build-exe writes the binary to the CWD, named after the stem, wherever the source is
+    var exe: str = sys.cwd() + "/hello_dbg"
+    if sys.getenv("OS") != nil
+        exe = exe + ".exe"
+
+    var c = DapClient()
+    assert c.start(zebra, src, exe), "could not start zebra debug"
+    var init = c.waitReply(c.initialize(), 90000)      # the relay compiles first (seconds)
+    assert init != nil, "no initialize reply; log: " + c.log().join(" | ")
+    assert init!.getBool("success"), "initialize failed"
+    c.launch()
+    var bp = c.waitReply(c.setBreakpoints(sys.cwd() + "/" + src, [2]), 30000)
+    assert bp != nil and bp!.getBool("success"), "setBreakpoints failed"
+    c.configurationDone()
+    assert c.waitState("stopped", 30000), "program did not stop at the breakpoint; state=" + c.state + " out=" + c.output
+    assert c.stop_reason == "breakpoint", "expected a breakpoint stop, got " + c.stop_reason
+    var st = c.waitReply(c.stackTrace(), 10000)
+    assert st != nil, "no stackTrace reply"
+    assert c.readFrames(st!) >= 2, "expected square + main frames"
+    var top: DapFrame = c.frames.at(0)
+    assert top.path.endsWith("hello_dbg.zbr"), "top frame should be the .zbr, got " + top.path
+    assert top.line == 2, "breakpoint line should be 2, got " + top.line.toString()
+    c.next()
+    assert c.waitState("stopped", 10000), "did not stop after next"
+    var st2 = c.waitReply(c.stackTrace(), 10000)
+    assert st2 != nil and c.readFrames(st2!) >= 1
+    assert c.frames.at(0).line == 3, "after next expected line 3, got " + c.frames.at(0).line.toString()
+    c.continue_()
+    assert c.waitState("stopped", 10000), "second breakpoint hit expected (loop)"
+    var dc = c.waitReply(c.disconnect(), 10000)
+    c.stop()
+    assert not c.running(), "relay still running after stop()"
+    print("dap_client_test: ok")
