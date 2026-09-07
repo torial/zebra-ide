@@ -3,12 +3,12 @@
 #   zebra --gui-backend=libui_ng src/ide.zbr        (deps beside the source)
 #   zebra --gui-backend=tui       src/ide.zbr        (compile control; editors are stubs)
 #
-# What this file is: the first slice that is an IDE rather than an editor —
-# one document, live diagnostics from the language server drawn as squiggles
-# and margin markers, go-to-definition, find-references, document symbols and
-# rename, all through two things that already exist: the LSP client (lsp.zbr)
-# and the raw Scintilla hatch (editor.sci / sciStr; ids in sci.zbr). No new
-# compiler builtins were needed for anything on this page.
+# What this file is: the IDE — many documents in one Scintilla control, live
+# diagnostics from the language server drawn as squiggles and margin markers,
+# go-to-definition, find-references, document symbols and rename (lsp.zbr),
+# a project's build and gates (gates.zbr), a debugger over `zebra debug`
+# (dap.zbr), find/replace — all through the raw Scintilla hatch (editor.sci /
+# sciStr; ids in sci.zbr) plus the three event `take*` methods.
 #
 # Shape (MVU, see QUICKSTART §30): the Model is a CLASS (mutated in place; a
 # struct would be copied into update and the edits lost), widgets are created on
@@ -729,7 +729,16 @@ def showFrames(m: Model, c: DapClient)
         var top: DapFrame = c.frames.at(0)
         if top.path != "" and top.path.endsWith(".zbr")
             if m.bufs.cur() as cb
-                if not (cb.path.endsWith(top.path) or top.path.endsWith(baseName(cb.path)) and baseName(top.path) == baseName(cb.path))
+                # Same file iff one path is a suffix of the other (the relay reports
+                # paths relative to its cwd, the buffer holds what was opened). A
+                # basename match alone is NOT enough — two same-named files in
+                # different directories are different files (refuter, 2026-09-07).
+                var same_file: bool = false
+                var np: str = top.path.replace("\\", "/")
+                var cp: str = cb.path.replace("\\", "/")
+                if cp == np or cp.endsWith("/" + np) or np.endsWith("/" + cp)
+                    same_file = true
+                if not same_file
                     var p: str = top.path
                     if not File.exists(p)
                         p = joinPath(sys.cwd(), top.path)

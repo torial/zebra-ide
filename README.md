@@ -4,7 +4,7 @@ A lightweight IDE for Zebra, C and Zig, written in Zebra, on libui-ng + Scintill
 talking to `zebra lsp` and `zebra debug`. Everything the IDE does beyond editing also
 runs headless (`tools/check.sh`), so a window is never the only witness.
 
-Status 2026-09-07: plan phases P0–P3 are landed and pass every headless gate in a
+Status 2026-09-07: plan phases P0–P4 are landed and pass every headless gate in a
 Linux container. **Nothing has yet been run on Windows with a window open.** The
 first-run checklist below is written for exactly that moment.
 

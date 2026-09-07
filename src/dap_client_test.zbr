@@ -50,6 +50,12 @@ def main()
     c.continue_()
     assert c.waitState("stopped", 10000), "second breakpoint hit expected (loop)"
     var dc = c.waitReply(c.disconnect(), 10000)
+    # `c.running()` after stop() is vacuous (stop() drops the handle), so witness the
+    # relay's exit through the transport BEFORE stopping (refuter, 2026-09-07).
+    var gone: int = 0
+    while c.io.running() and gone < 100
+        sys.sleep(50)
+        gone = gone + 1
+    assert not c.io.running(), "relay still running 5 s after disconnect"
     c.stop()
-    assert not c.running(), "relay still running after stop()"
     print("dap_client_test: ok")

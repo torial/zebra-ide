@@ -4,3 +4,7 @@ zig-out/
 *.pdb
 zl.tgz
 _stage/
+# The crew commons is address-private (see .claude/crew/commons/README.md):
+# its contents never enter git history.
+.claude/crew/commons/*
+!.claude/crew/commons/README.md
