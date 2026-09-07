@@ -232,7 +232,14 @@ class DapClient
             var col: int = 0
             if not f.at("column").isNull()
                 col = f.getInt("column")
-            .frames.add(DapFrame(id: f.getInt("id"), name: f.getStr("name"), path: path, line: f.getInt("line"), col: col))
+            var name: str = f.getStr("name")
+            # the selfhost emits Zebra functions as `_zbr_fn_<name>`; show the Zebra name
+            if name.contains("._zbr_fn_")
+                var k: int = name.indexOf("._zbr_fn_")
+                name = name[0..k + 1] + name[k + 9..name.len]
+            else if name.startsWith("_zbr_fn_")
+                name = name[8..name.len]
+            .frames.add(DapFrame(id: f.getInt("id"), name: name, path: path, line: f.getInt("line"), col: col))
         return .frames.len
 
     def readVariables(reply: JsonValue): List(DapVar)
