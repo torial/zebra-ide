@@ -1,0 +1,88 @@
+# lsp_client_test — the LSP client against a real server (`zebra lsp`), headless.
+#   zebra src/lsp_client_test.zbr      (deps must sit beside the source; --module-path is types-only)
+# Controls: initialize handshake (capabilities filed, `initialized` sent), didOpen
+# → publishDiagnostics filed by uri (empty for a clean file), definition of `area`
+# lands on its def line, references = def + call, rename edits both, shutdown +
+# stop leaves no child. Frames split across polls are exercised implicitly: the
+# server's replies arrive whenever the OS delivers them and poll() reassembles.
+use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
+
+def findLine(text: str, needle: str): int
+    var i: int = 0
+    for l in text.split("\n")
+        if l.contains(needle)
+            return i
+        i = i + 1
+    return -1
+
+def main()
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    assert zopt != nil, "ZEBRA_COMPILER must be set (the compiler sets it for programs it runs)"
+    var zebra: str = zopt!
+
+    var argv: List(str) = List()
+    argv.add(zebra)
+    argv.add("lsp")
+    var c = LspClient()
+    assert c.start("zebra", argv), "could not start zebra lsp"
+
+    # initialize
+    var init_id: int = c.initialize("file:///tmp")
+    var init = c.waitReply(init_id, 5000)
+    assert init != nil, "no initialize reply; log: " + c.log.join(" | ")
+    assert c.initialized, "client did not mark itself initialized"
+    assert c.capabilities.getBool("referencesProvider"), "server capabilities lack referencesProvider"
+
+    # open showcase.zbr (found next to the compiler: <zebra dir>/../../examples/showcase.zbr)
+    var path: str = zebra.replace("\\", "/")
+    var bin_dir: str = path[0..path.lastIndexOf("/")]
+    var src_path: str = bin_dir + "/../../examples/showcase.zbr"
+    assert File.exists(src_path), "showcase.zbr not found at " + src_path
+    var text: str = File.read(src_path)
+    var uri: str = "file://" + src_path
+    assert c.didOpen(uri, "zebra", 1, text), "didOpen failed"
+
+    # diagnostics arrive as a notification after the server's ~200 ms lull
+    var waited: int = 0
+    while waited < 3000 and c.diagnostics.get(uri) == nil
+        c.poll()
+        sys.sleep(50)
+        waited = waited + 50
+    assert c.diagnostics.get(uri) != nil, "no publishDiagnostics for the opened file"
+    assert c.diagnostics.get(uri)!.len == 0, "showcase.zbr should be clean"
+
+    # definition / references / rename on `area` at its call site
+    var call_line: int = findLine(text, "total + area(s)")
+    var def_line: int = findLine(text, "def area(")
+    assert call_line > 0 and def_line > 0, "fixture lines not found"
+    var call_col: int = -1
+    var li: int = 0
+    for l in text.split("\n")
+        if li == call_line
+            call_col = l.indexOf("area(")
+        li = li + 1
+
+    var d = c.waitReply(c.definition(uri, call_line, call_col), 5000)
+    assert d != nil, "no definition reply"
+    var dl: List(LspLocation) = c.locations(d!)
+    assert dl.len == 1 and dl.at(0).line == def_line, "definition should land on def line " + def_line.toString()
+
+    var r = c.waitReply(c.references(uri, call_line, call_col), 5000)
+    assert r != nil, "no references reply"
+    var rl: List(LspLocation) = c.locations(r!)
+    assert rl.len == 2, "expected 2 references, got " + rl.len.toString()
+
+    var rn = c.waitReply(c.rename(uri, call_line, call_col, "surface"), 5000)
+    assert rn != nil, "no rename reply"
+    var n_edits: int = 0
+    for e in rn!.getObj("result").getObj("changes").getList(uri)
+        n_edits = n_edits + 1
+    assert n_edits == 2, "rename should produce 2 edits, got " + n_edits.toString()
+
+    # shutdown and stop
+    var sd = c.waitReply(c.shutdown(), 5000)
+    assert sd != nil, "no shutdown reply"
+    c.stop()
+    assert not c.running(), "server still running after stop()"
+
+    print("lsp_client_test: ok")

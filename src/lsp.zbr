@@ -1,0 +1,265 @@
+# lsp.zbr — a small LSP client host for zebra-ide. Stdlib only.
+#
+# One LspClient per language server (zebra lsp / clangd / zls), each a child
+# process on pipes (sys.spawnPiped). The client never blocks: `poll()` drains
+# whatever the server has written so far, splits it into Content-Length frames,
+# and files each message — replies by request id, diagnostics by uri, everything
+# else on a notifications list. The UI calls poll() from its 100 ms tick.
+#
+# Design notes (kept next to the code so a future occasion does not re-derive them):
+#   * Request ids are per client and monotonic; the method name is remembered per
+#     id so a reply can be routed without the caller keeping state.
+#   * Frames may arrive split across polls or several per poll — `buf` holds the
+#     unconsumed tail; a frame is consumed only when its whole body has arrived.
+#   * JSON is built by string concatenation with `jsonEscape`, matching the server
+#     side (selfhost/main.zbr does the same); parsed with Json.parse.
+
+struct LspDiagnostic
+    var uri: str
+    var line: int        # 0-based, as LSP sends it
+    var col: int
+    var end_line: int
+    var end_col: int
+    var severity: int    # 1 error, 2 warning, 3 info, 4 hint
+    var message: str
+
+    cue init(uri: str, line: int, col: int, end_line: int, end_col: int, severity: int, message: str)
+        .uri = uri
+        .line = line
+        .col = col
+        .end_line = end_line
+        .end_col = end_col
+        .severity = severity
+        .message = message
+
+struct LspLocation
+    var uri: str
+    var line: int
+    var col: int
+    var end_line: int
+    var end_col: int
+
+    cue init(uri: str, line: int, col: int, end_line: int, end_col: int)
+        .uri = uri
+        .line = line
+        .col = col
+        .end_line = end_line
+        .end_col = end_col
+
+def jsonEscape(s: str): str
+    var r = s.replace("\\", "\\\\")
+    r = r.replace("\"", "\\\"")
+    r = r.replace("\n", "\\n")
+    r = r.replace("\t", "\\t")
+    r = r.replace("\r", "\\r")
+    return r
+
+def rangeJson(line: int, col: int): str
+    return "{\"line\":" + line.toString() + ",\"character\":" + col.toString() + "}"
+
+def locationFrom(v: JsonValue): LspLocation
+    var rng = v.getObj("range")
+    var s = rng.getObj("start")
+    var e = rng.getObj("end")
+    return LspLocation(v.getStr("uri"), s.getInt("line"), s.getInt("character"), e.getInt("line"), e.getInt("character"))
+
+class LspClient
+    var name: str = ""
+    var proc: SysProcess? = nil
+    var buf: str = ""
+    var next_id: int = 1
+    var pending: HashMap(int, str)                     # id -> method
+    var replies: HashMap(int, str)                     # id -> raw reply body (parsed on take)
+    var diagnostics: HashMap(str, List(LspDiagnostic))
+    var notifications: List(str)                       # raw bodies of other server->client messages
+    var log: List(str)                                 # transport-level events, newest last
+    var initialized: bool = false
+    var capabilities: JsonValue
+
+    cue init()
+        .pending = HashMap(int, str)()
+        .replies = HashMap(int, str)()
+        .diagnostics = HashMap(str, List(LspDiagnostic))()
+        .notifications = List(str)()
+        .log = List(str)()
+        .capabilities = Json.object()
+
+    def start(name: str, argv: List(str)): bool
+        .name = name
+        var p = sys.spawnPiped(argv)
+        if not p.isRunning()
+            .log.add("start: could not spawn " + argv.at(0))
+            return false
+        .proc = p
+        return true
+
+    def running(): bool
+        if .proc as p
+            return p.isRunning()
+        return false
+
+    def send(body: str): bool
+        if .proc as p
+            var ok = p.write("Content-Length: " + body.len.toString() + "\r\n\r\n" + body)
+            if not ok
+                .log.add("send: write failed (" + .name + ")")
+            return ok
+        return false
+
+    # Fire a request; returns its id (0 if it could not be sent).
+    def request(method: str, params_json: str): int
+        var id: int = .next_id
+        .next_id = .next_id + 1
+        var body: str = "{\"jsonrpc\":\"2.0\",\"id\":" + id.toString() + ",\"method\":\"" + method + "\",\"params\":" + params_json + "}"
+        if .send(body)
+            .pending.put(id, method)
+            return id
+        return 0
+
+    def notify(method: str, params_json: str): bool
+        return .send("{\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\",\"params\":" + params_json + "}")
+
+    # ── Protocol helpers ─────────────────────────────────────────────────────
+    def initialize(root_uri: str): int
+        return .request("initialize", "{\"processId\":null,\"rootUri\":\"" + jsonEscape(root_uri) + "\",\"capabilities\":{}}")
+
+    def didOpen(uri: str, language_id: str, version: int, text: str): bool
+        return .notify("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\",\"languageId\":\"" + language_id + "\",\"version\":" + version.toString() + ",\"text\":\"" + jsonEscape(text) + "\"}}")
+
+    def didChange(uri: str, version: int, text: str): bool
+        return .notify("textDocument/didChange", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\",\"version\":" + version.toString() + "},\"contentChanges\":[{\"text\":\"" + jsonEscape(text) + "\"}]}")
+
+    def didClose(uri: str): bool
+        return .notify("textDocument/didClose", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"}}")
+
+    def positional(method: str, uri: str, line: int, col: int, extra: str): int
+        return .request(method, "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"},\"position\":" + rangeJson(line, col) + extra + "}")
+
+    def definition(uri: str, line: int, col: int): int
+        return .positional("textDocument/definition", uri, line, col, "")
+
+    def references(uri: str, line: int, col: int): int
+        return .positional("textDocument/references", uri, line, col, ",\"context\":{\"includeDeclaration\":true}")
+
+    def hover(uri: str, line: int, col: int): int
+        return .positional("textDocument/hover", uri, line, col, "")
+
+    def rename(uri: str, line: int, col: int, new_name: str): int
+        return .positional("textDocument/rename", uri, line, col, ",\"newName\":\"" + jsonEscape(new_name) + "\"")
+
+    def documentSymbol(uri: str): int
+        return .request("textDocument/documentSymbol", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"}}")
+
+    def shutdown(): int
+        return .request("shutdown", "{}")
+
+    # ── Receiving ────────────────────────────────────────────────────────────
+    # Drain the pipe and file every complete frame. Returns how many messages arrived.
+    def poll(): int
+        var count: int = 0
+        if .proc as p
+            var chunk: str = p.readAvailable()
+            if chunk != ""
+                .buf = .buf + chunk
+            var err: str = p.readErrAvailable()
+            if err != ""
+                .log.add("stderr: " + err)
+        while true
+            var hdr_end: int = .buf.indexOf("\r\n\r\n")
+            if hdr_end < 0
+                break
+            var header: str = .buf[0..hdr_end]
+            var content_len: int = -1
+            for h in header.split("\r\n")
+                if h.startsWith("Content-Length:")
+                    content_len = h[15..h.len].trim().toInt()
+            if content_len < 0
+                # Malformed header: drop it rather than wedge forever.
+                .log.add("poll: frame without Content-Length dropped")
+                .buf = .buf[hdr_end + 4..(.buf.len)]
+                continue
+            var body_start: int = hdr_end + 4
+            if .buf.len < body_start + content_len
+                break    # body not fully here yet
+            var body: str = .buf[body_start..body_start + content_len]
+            .buf = .buf[body_start + content_len..(.buf.len)]
+            .file(body)
+            count = count + 1
+        return count
+
+    def file(body: str)
+        var jv = Json.parse(body)
+        if jv == nil
+            .log.add("poll: unparseable message dropped")
+            return
+        var j = jv!
+        if not j.at("id").isNull() and j.at("method").isNull()
+            # A reply (result or error) to one of our requests.
+            var id: int = j.getInt("id")
+            .replies.put(id, body)
+            if .pending.get(id) as m
+                if m == "initialize"
+                    .initialized = true
+                    .capabilities = j.getObj("result").getObj("capabilities")
+                    .notify("initialized", "{}")
+            .pending.remove(id)
+            return
+        var method: str = j.getStr("method")
+        if method == "textDocument/publishDiagnostics"
+            var params = j.getObj("params")
+            var uri: str = params.getStr("uri")
+            var ds: List(LspDiagnostic) = List(LspDiagnostic)()
+            for d in params.getList("diagnostics")
+                var sev: int = 1
+                if not d.at("severity").isNull()
+                    sev = d.getInt("severity")
+                var loc: LspLocation = locationFrom(d)     # uri absent on a Diagnostic; only the range is used
+                ds.add(LspDiagnostic(uri, loc.line, loc.col, loc.end_line, loc.end_col, sev, d.getStr("message")))
+            .diagnostics.put(uri, ds)
+            return
+        .notifications.add(body)
+
+    # Reply for `id`, if it has arrived (and take it off the table).
+    def takeReply(id: int): JsonValue?
+        if .replies.get(id) as r
+            .replies.remove(id)
+            return Json.parse(r)
+        return nil
+
+    # Poll until the reply for `id` arrives or `timeout_ms` passes (for tests and
+    # for one-shot tools; the GUI uses poll()+takeReply() from its tick instead).
+    def waitReply(id: int, timeout_ms: int): JsonValue?
+        var waited: int = 0
+        while waited <= timeout_ms
+            .poll()
+            if .takeReply(id) as r
+                return r
+            if not .running()
+                return nil
+            sys.sleep(20)
+            waited = waited + 20
+        return nil
+
+    # Decode a Location | Location[] | null result into a list.
+    def locations(reply: JsonValue): List(LspLocation)
+        var out: List(LspLocation) = List(LspLocation)()
+        var res = reply.at("result")
+        if res.isNull()
+            return out
+        if res.isArray()
+            for v in reply.getList("result")
+                out.add(locationFrom(v))
+        else
+            out.add(locationFrom(res))
+        return out
+
+    def stop()
+        if .proc as p
+            p.closeStdin()
+            var ticks: int = 0
+            while p.isRunning() and ticks < 20
+                sys.sleep(50)
+                ticks = ticks + 1
+            if p.isRunning()
+                p.kill()
+        .proc = nil
