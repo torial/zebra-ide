@@ -28,14 +28,15 @@ def main()
     sb.append("{\"name\":\"good\",\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\",\"expect\":\"resolved OK\"},")
     sb.append("{\"name\":\"bad\",\"cmd\":[\"" + zebra + "\",\"-c\",\"bad.zbr\"],\"cwd\":\"proj\"},")
     sb.append("{\"name\":\"wrong-pass\",\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\",\"expect\":\"this never prints\"},")
-    sb.append("{\"name\":\"slow\",\"cmd\":[\"" + zebra + "\",\"lsp\"],\"cwd\":\"proj\",\"timeout_ms\":300}")
+    sb.append("{\"name\":\"slow\",\"cmd\":[\"" + zebra + "\",\"lsp\"],\"cwd\":\"proj\",\"timeout_ms\":300},")
+    sb.append("{\"name\":\"skipper\",\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\",\"expect\":\"resolved OK\",\"skip\":\"resolved OK\"}")
     sb.append("]}")
     var manifest: str = sb.build()
     File.write("gates_tmp/zebra-ide.json", manifest)
     var mopt = loadManifest("gates_tmp/zebra-ide.json")
     assert mopt != nil, "manifest did not load"
     var m: Manifest = mopt!
-    assert m.name == "gates-fixture" and m.gates.len == 4 and m.build != nil
+    assert m.name == "gates-fixture" and m.gates.len == 5 and m.build != nil
     assert m.gates.at(0).cwd == "gates_tmp/proj", "cwd should be joined to the manifest dir, got " + m.gates.at(0).cwd
     assert m.find("bad") != nil and m.find("nope") == nil
 
@@ -49,5 +50,8 @@ def main()
     assert wp.exit_code == 0 and not wp.ok, "pass-string missing must fail the gate"
     var slow: GateRun = runToEnd(m.gates.at(3))
     assert slow.timed_out and slow.verdict() == "TIMEOUT", "lsp server should be killed by the 300 ms timeout"
+    # a gate whose output carries its skip marker is SKIP: not ok, not failed, not counted
+    var sk: GateRun = runToEnd(m.gates.at(4))
+    assert sk.skipped and not sk.ok and sk.verdict() == "SKIP", "skip marker must yield SKIP, got " + sk.verdict()
     assert loadManifest("gates_tmp/missing.json") == nil
     print("gates_test: ok")

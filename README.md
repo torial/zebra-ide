@@ -43,13 +43,16 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
 5. **Build**, then **Run gates** → the pane fills, verdict lines appear, a failing gate's
    diagnostics are jumpable. (`zebra src\gates.zbr -- zebra-ide.json` is the same thing
    headless.)
-6. **Click the margin** on a line in a small program, **Debug** → yellow arrow on that
-   line, frames in the debugger pane; Next moves it; Stop ends it.
+6. Put the caret on a line in a small program and press **Breakpoint** (the margin
+   click needs the notify bridge, which is absent until the pin bump — same as step
+   3), then **Debug** → yellow arrow on that line, frames in the debugger pane; Next
+   moves it; Stop ends it. If `lldb-dap` is missing, the debugger pane shows the
+   relay's own message saying so and how to install it.
 
 If a step fails, the thing to send back is the status line text plus, for 2/4/6, the
 child's stderr: run `zebra lsp` / `zebra debug file.zbr` by hand and paste what it
-prints. Every failure so far has been in a layer with a headless test; the window is
-the last layer, and it is the one no test here can see.
+prints. Every layer below the window has a headless test that has been seen red; the
+window itself has none and has never been opened.
 
 ## What is where
 
@@ -69,6 +72,21 @@ the last layer, and it is the one no test here can see.
 - Eight tabs (a fixed row: libui creates every widget on frame 0 and `uiTab` cannot
   relabel pages). Close one to open a ninth.
 - No keyboard shortcuts: libui exposes no key events for Scintilla. Buttons for now.
-- Locals are empty in the debugger: lldb has no Zig language plugin. Globals work.
+- No variables pane yet. The DAP client can ask for scopes/variables, but the IDE
+  does not show them; lldb has no Zig language plugin, so Locals would come back
+  empty anyway (Globals and Registers do work at the protocol level).
 - The tui backend only proves the program compiles; its editor is a text stub.
 - Squiggles on `selfhost/CodeGen.zbr` lag by the compiler's own check time (~6 s).
+- C and Zig: syntax colouring only. One language server (`zebra lsp`) is wired; C and
+  Zig buffers are not sent to it, so they get no diagnostics or navigation until a
+  clangd / zls client is added. The status line says so when such a file opens.
+- **Plugins: not started.** Named in the ask; nothing in this tree yet. The intended
+  route is Zebra's existing DynLib plugin system plus the gate manifest for anything
+  that is a process.
+- **Haiku: not started.** The GUI is built for Windows first; the compiler-side
+  cross-platform work (libui-ng's Haiku backend, a Scintilla platform layer) is the
+  long pole and lives in the plan, not here.
+- Rename edits open buffers in memory (unsaved) and rewrites unopened files on disk
+  in place, and says so in the status line. Close refuses once on unsaved changes.
+- A gate that cannot run here (no lldb-dap) reports **SKIP**, not PASS — in the pane,
+  in `gates.zbr`, and in `check.sh`.

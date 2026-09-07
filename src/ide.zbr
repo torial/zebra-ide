@@ -77,6 +77,7 @@ class Model
     var warnings: int = 0
     var overlay_ready: bool = false      # Scintilla exists only after the first render
     var tick_n: int = 0
+    var close_armed: int = -1            # buffer index whose unsaved close was refused once
     # project gates (gates.zbr): manifest, the run in flight, the queue behind it,
     # and the output pane's line → diagnostic map for "Jump to diagnostic"
     var manifest: Manifest? = nil
@@ -89,6 +90,7 @@ class Model
     var pane_diag_idx: List(int)         # per pane line: index into pane_diag or -1
     var gates_failed: int = 0
     var gates_done: int = 0
+    var gates_skipped: int = 0
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
     var dbg: DapClient? = nil
     var dbg_pane: CodeEditor? = nil
@@ -126,6 +128,7 @@ union Msg
     reload_manifest
     jump_diag
     toggle_bookmark
+    toggle_breakpoint
     debug_start
     debug_continue
     debug_next
@@ -334,18 +337,20 @@ def switchTo(m: Model, i: int)
     saveView(m)
     showBuffer(m, i)
 
-def openFile(m: Model, p: str)
+# Returns true when `p` is now the current buffer; callers must not move the
+# caret when it is not (advocate finding 8, 2026-09-07).
+def openFile(m: Model, p: str): bool
     var existing: int = m.bufs.find(p)
     if existing >= 0
         switchTo(m, existing)
         m.status = "switched"
-        return
+        return true
     if not File.exists(p)
         m.status = "not found: " + p
-        return
+        return false
     if m.bufs.count() >= MAX_TABS
         m.status = "tab row is full (" + MAX_TABS.toString() + ") — close one first"
-        return
+        return false
     var text: str = File.read(p)
     saveView(m)
     var i: int = m.bufs.open(p, text)
@@ -365,11 +370,18 @@ def openFile(m: Model, p: str)
     m.quiet = 0
     m.errors = 0
     m.warnings = 0
+    # Only Zebra buffers go to `zebra lsp`: it would report a valid C or Zig file as
+    # a Zebra parse error — a fabricated diagnostic (advocate finding 3). Until a
+    # clangd/zls client exists, C and Zig get colouring and nothing pretends more.
     if m.lsp as c
-        if c.initialized
+        if c.initialized and b.lang == "zebra"
             c.didOpen(b.uri, b.lang, 1, text)
             b.opened_lsp = true
-    m.status = "opened " + baseName(p)
+    if b.lang == "zebra"
+        m.status = "opened " + baseName(p)
+    else
+        m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only, no language server yet)"
+    return true
 
 def closeCurrent(m: Model)
     var i: int = m.bufs.current
@@ -499,7 +511,7 @@ def applyWorkspaceEdit(m: Model, changes: JsonValue): str
     if start_idx >= 0
         switchTo(m, start_idx)
         gotoLineCol(m.editor!, line, col)
-    return "renamed in " + n_open.toString() + " open buffer(s), " + n_disk.toString() + " file(s) on disk"
+    return "renamed in " + n_open.toString() + " open buffer(s) (unsaved — Save each) and " + n_disk.toString() + " unopened file(s) written to disk"
 
 # ── Find / replace (Scintilla's target search; case-sensitive, plain text) ──────
 # Search from `from`; on a hit select it and return its start, else -1 (wraps once).
@@ -654,7 +666,9 @@ def pollGates(m: Model)
         if r.poll()
             m.run = nil
             m.gates_done = m.gates_done + 1
-            if not r.ok
+            if r.skipped
+                m.gates_skipped = m.gates_skipped + 1
+            else if not r.ok
                 m.gates_failed = m.gates_failed + 1
             # the tool's own output, then its parsed diagnostics as jumpable lines
             for l in r.output.split("\n")
@@ -665,8 +679,12 @@ def pollGates(m: Model)
             paneAppend(m, r.verdict() + "  " + r.spec.name + "  (" + r.elapsed_ms.toString() + " ms, exit " + r.exit_code.toString() + ")", nil)
             markBuildDiags(m, r.diags)
             if m.queue.len == 0
-                paneAppend(m, "── " + (m.gates_done - m.gates_failed).toString() + "/" + m.gates_done.toString() + " passed", nil)
-                m.status = (m.gates_done - m.gates_failed).toString() + "/" + m.gates_done.toString() + " gates passed"
+                var ran: int = m.gates_done - m.gates_skipped
+                var summary: str = (ran - m.gates_failed).toString() + "/" + ran.toString() + " passed"
+                if m.gates_skipped > 0
+                    summary = summary + ", " + m.gates_skipped.toString() + " skipped (could not run here)"
+                paneAppend(m, "── " + summary, nil)
+                m.status = summary
             paneRefresh(m)
             startNextGate(m)
         else
@@ -743,9 +761,12 @@ def showFrames(m: Model, c: DapClient)
                     if not File.exists(p)
                         p = joinPath(sys.cwd(), top.path)
                     if File.exists(p)
-                        openFile(m, p)
-            gotoLineCol(m.editor!, top.line - 1, 0)
-            m.editor!.sci(SCI_MARKERADD, top.line - 1, MARKER_CURRENT)
+                        same_file = openFile(m, p)
+                    else
+                        m.status = "debug: stopped in " + top.path + ", which is not open here"
+                if same_file
+                    gotoLineCol(m.editor!, top.line - 1, 0)
+                    m.editor!.sci(SCI_MARKERADD, top.line - 1, MARKER_CURRENT)
 
 def pollDebug(m: Model)
     if m.dbg as c
@@ -754,6 +775,13 @@ def pollDebug(m: Model)
             var tail: str = ""
             if c.output.len > 0
                 tail = "\n── output ──\n" + c.output
+            if not m.dbg_launched
+                # the relay died before the session started: its stderr says why
+                # (no lldb-dap on PATH, compile error) — show it, do not bury it
+                # under "exit -1" (advocate finding 6)
+                dbgPane(m, "zebra debug did not start:\n" + c.log().join("\n"))
+                debugEnd(m, "could not start — see the debugger pane")
+                return
             dbgPane(m, "session ended (exit " + c.exit_code.toString() + ")" + tail)
             debugEnd(m, "ended, exit " + c.exit_code.toString())
             return
@@ -838,7 +866,7 @@ def tick(m: Model)
         var oi: int = 0
         while oi < m.bufs.count()
             var ob: Buffer = m.bufs.items.at(oi)
-            if not ob.opened_lsp
+            if not ob.opened_lsp and ob.lang == "zebra"
                 var otext: str = ob.text
                 if oi == m.bufs.current
                     otext = m.editor!.getText()
@@ -872,11 +900,13 @@ def tick(m: Model)
                 m.status = "no definition"
             else
                 var target: LspLocation = locs.at(0)
+                var here: bool = true
                 if m.bufs.cur() as cb2
                     if target.uri != cb2.uri
-                        openFile(m, pathOfUri(target.uri))
-                gotoLineCol(m.editor!, target.line, target.col)
-                m.status = "definition: " + baseName(pathOfUri(target.uri)) + ":" + (target.line + 1).toString()
+                        here = openFile(m, pathOfUri(target.uri))
+                if here
+                    gotoLineCol(m.editor!, target.line, target.col)
+                    m.status = "definition: " + baseName(pathOfUri(target.uri)) + ":" + (target.line + 1).toString()
     if m.refs_id != 0
         if c.takeReply(m.refs_id) as r
             m.refs_id = 0
@@ -929,6 +959,12 @@ def update(m: Model, msg: Msg): Model
             switchTo(m, ti)
             return m
         on Msg.close_tab
+            # unsaved changes: refuse once and say so; a second Close discards (advocate 9)
+            if m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0 and m.close_armed != m.bufs.current
+                m.close_armed = m.bufs.current
+                m.status = "unsaved changes — Save, or press Close again to discard them"
+                return m
+            m.close_armed = -1
             closeCurrent(m)
             return m
         on Msg.reload_manifest
@@ -943,6 +979,7 @@ def update(m: Model, msg: Msg): Model
                     paneClear(m)
                     m.gates_done = 0
                     m.gates_failed = 0
+                    m.gates_skipped = 0
                     m.queue = List(GateSpec)()
                     m.queue.add(bspec)
                     startNextGate(m)
@@ -959,6 +996,7 @@ def update(m: Model, msg: Msg): Model
                 paneClear(m)
                 m.gates_done = 0
                 m.gates_failed = 0
+                m.gates_skipped = 0
                 m.queue = List(GateSpec)()
                 for g in mf.gates
                     m.queue.add(g)
@@ -970,6 +1008,15 @@ def update(m: Model, msg: Msg): Model
             return m
         on Msg.toggle_bookmark
             toggleMarker(m.editor!, cursorLine(m.editor!), MARKER_BOOKMARK)
+            return m
+        on Msg.toggle_breakpoint
+            # the margin click needs the notify bridge, which is absent at the shipped
+            # zig-libui-ng pin (advocate finding 1) — the button always works
+            toggleMarker(m.editor!, cursorLine(m.editor!), MARKER_BREAK)
+            if m.dbg as dcb
+                if m.bufs.cur() as cbb
+                    if dcb.state == "stopped"
+                        dcb.setBreakpoints(cbb.path, markerLines(m.editor!, MARKER_BREAK))
             return m
         on Msg.debug_start
             debugStart(m)
@@ -1026,11 +1073,11 @@ def update(m: Model, msg: Msg): Model
                 var full: str = joinPath(root, d.path)
                 if not File.exists(full)
                     full = d.path
-                openFile(m, full)
-                var col: int = 0
-                if d.col > 0
-                    col = d.col - 1
-                gotoLineCol(m.editor!, d.line - 1, col)
+                if openFile(m, full)
+                    var col: int = 0
+                    if d.col > 0
+                        col = d.col - 1
+                    gotoLineCol(m.editor!, d.line - 1, col)
             return m
         on Msg.goto_def
             if m.lsp as c
@@ -1058,10 +1105,12 @@ def update(m: Model, msg: Msg): Model
         on Msg.jump_ref
             var i: int = cursorLine(m.refs!)
             if i < m.ref_lines.len
+                var here2: bool = true
                 if m.bufs.cur() as b
                     if m.ref_uris.at(i) != b.uri
-                        openFile(m, pathOfUri(m.ref_uris.at(i)))
-                gotoLineCol(m.editor!, m.ref_lines.at(i), 0)
+                        here2 = openFile(m, pathOfUri(m.ref_uris.at(i)))
+                if here2
+                    gotoLineCol(m.editor!, m.ref_lines.at(i), 0)
             return m
         on Msg.jump_sym
             var i: int = cursorLine(m.outline!)
@@ -1084,7 +1133,8 @@ def view(g: Gui, m: Model)
             if g.button("Open…")
                 var p = g.openFile()
                 if p as path
-                    openFile(m, path)
+                    if not openFile(m, path)
+                        pass
             if g.button("Save")
                 g.send(Msg.save_file)
             if g.button("Definition")
@@ -1118,6 +1168,8 @@ def view(g: Gui, m: Model)
             if g.button("Replace all")
                 g.send(Msg.replace_all)
         using g.hbox("##debugbar", false)
+            if g.button("Breakpoint")
+                g.send(Msg.toggle_breakpoint)
             if g.button("Debug")
                 g.send(Msg.debug_start)
             if g.button("Continue")
@@ -1169,8 +1221,11 @@ def view(g: Gui, m: Model)
         if m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
             dirty = " *"
         var lsp_s: str = "no lsp"
-        if m.lsp_ok
-            lsp_s = "zebra lsp"
+        if m.lsp as lc
+            if lc.initialized
+                lsp_s = "zebra lsp"
+            else
+                lsp_s = "lsp starting…"
         var cur_path: str = ""
         if m.bufs.cur() as vb
             cur_path = vb.path

@@ -17,8 +17,11 @@
 #
 # Per gate: `cmd` (argv), `cwd` (relative to the manifest's directory; default "."),
 # `expect` (a substring the output must contain; absent = exit code 0 is enough),
-# `timeout_ms` (default 600000). A gate PASSES when the exit code is 0 AND, if
-# given, `expect` appears in stdout+stderr. Every line of output that looks like a
+# `skip` (a substring that means the gate could not run in this environment — e.g.
+# a missing lldb-dap — reported as SKIP, which is neither PASS nor FAIL and never
+# counts toward "N/N passed"; advocate finding 2, 2026-09-07), `timeout_ms`
+# (default 600000). A gate PASSES when the exit code is 0 AND, if given, `expect`
+# appears in stdout+stderr AND `skip` does not. Every line of output that looks like a
 # compiler diagnostic — `path:line:col: error|warning|note: msg` (zig, zig cc,
 # clang) or `path:line: error: msg` (zebra) — becomes a Diag the IDE can turn
 # into markers; the CLI prints them under the verdict.
@@ -39,6 +42,7 @@ struct GateSpec
     var argv: List(str)
     var cwd: str
     var expect: str
+    var skip: str          # substring meaning "this gate could not run here" → SKIP, never PASS
     var timeout_ms: int
 
 class Manifest
@@ -91,13 +95,16 @@ def specFrom(j: JsonValue, root: str): GateSpec
     var expect: str = ""
     if not j.at("expect").isNull()
         expect = j.getStr("expect")
+    var skip: str = ""
+    if not j.at("skip").isNull()
+        skip = j.getStr("skip")
     var timeout: int = 600000
     if not j.at("timeout_ms").isNull()
         timeout = j.getInt("timeout_ms")
     var name: str = ""
     if not j.at("name").isNull()
         name = j.getStr("name")
-    return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, timeout_ms: timeout)
+    return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, skip: skip, timeout_ms: timeout)
 
 def loadManifest(path: str): Manifest?
     if not File.exists(path)
@@ -113,7 +120,7 @@ def loadManifest(path: str): Manifest?
     if not j.at("build").isNull()
         var b: GateSpec = specFrom(j.getObj("build"), m.root)
         if b.name == ""
-            b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, timeout_ms: b.timeout_ms)
+            b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, skip: b.skip, timeout_ms: b.timeout_ms)
         m.build = b
     if not j.at("gates").isNull()
         for g in j.getList("gates")
@@ -181,6 +188,7 @@ class GateRun
     var timed_out: bool = false
     var exit_code: int = -1
     var ok: bool = false
+    var skipped: bool = false
     var diags: List(Diag)
 
     cue init(s: GateSpec)
@@ -217,7 +225,8 @@ class GateRun
             .done = true
         .diags = diagsIn(.output)
         var pass_seen: bool = .spec.expect == "" or .output.contains(.spec.expect)
-        .ok = (.exit_code == 0) and pass_seen and not .timed_out
+        .skipped = .spec.skip != "" and .output.contains(.spec.skip)
+        .ok = (.exit_code == 0) and pass_seen and not .timed_out and not .skipped
         return true
 
     def verdict(): str
@@ -225,6 +234,8 @@ class GateRun
             return "RUNNING"
         if .timed_out
             return "TIMEOUT"
+        if .skipped
+            return "SKIP"
         if .ok
             return "PASS"
         return "FAIL"
@@ -255,6 +266,7 @@ def main()
         wanted.add(args.at(ai))
         ai = ai + 1
     var failed: int = 0
+    var skipped: int = 0
     var ran: int = 0
     for g in m.gates
         if wanted.len > 0 and not wanted.contains(g.name)
@@ -264,7 +276,9 @@ def main()
         print(r.verdict() + "  " + g.name + "  (" + r.elapsed_ms.toString() + " ms, exit " + r.exit_code.toString() + ")")
         for d in r.diags
             print("    " + d.path + ":" + d.line.toString() + ":" + d.col.toString() + ": " + d.severity + ": " + d.message)
-        if not r.ok
+        if r.skipped
+            skipped = skipped + 1
+        else if not r.ok
             failed = failed + 1
             # the last lines of output are usually the reason; keep it short
             var lines: List(str) = r.output.split("\n")
@@ -276,5 +290,8 @@ def main()
                 if li >= from and l.trim() != ""
                     print("    | " + l)
                 li = li + 1
-    print(m.name + ": " + (ran - failed).toString() + "/" + ran.toString() + " gates passed")
+    var skip_note: str = ""
+    if skipped > 0
+        skip_note = ", " + skipped.toString() + " skipped (could not run here)"
+    print(m.name + ": " + (ran - failed - skipped).toString() + "/" + (ran - skipped).toString() + " gates passed" + skip_note)
     sys.exit(failed)
