@@ -1,0 +1,53 @@
+# gates_test — the gate runner headless: manifest parsing, a passing gate, a failing
+# gate with a real compiler diagnostic parsed out of it, cwd honoured, timeout.
+#   zebra src/gates_test.zbr
+use gates exposing Manifest, GateSpec, GateRun, Diag, loadManifest, parseDiag, diagsIn, runToEnd, dirOf, joinPath
+
+def main()
+    # diagnostic line shapes
+    var d1 = parseDiag("src/main.zig:4380:75: error: use of undeclared identifier 'str'")
+    assert d1 != nil and d1!.path == "src/main.zig" and d1!.line == 4380 and d1!.col == 75 and d1!.severity == "error"
+    var d2 = parseDiag("examples/styler_smoke.zbr:20: error: undefined name: 'name'")
+    assert d2 != nil and d2!.path == "examples/styler_smoke.zbr" and d2!.line == 20 and d2!.col == 0
+    var d3 = parseDiag("C:\\Projects\\x\\win.cxx:31:5: warning: unused variable 'q'")
+    assert d3 != nil and d3!.path == "C:\\Projects\\x\\win.cxx" and d3!.line == 31 and d3!.col == 5 and d3!.severity == "warning"
+    assert parseDiag("PASS: round-trip clean") == nil
+    assert parseDiag("error: the following build command failed with exit code 1:") == nil
+    assert diagsIn("a.zig:1:1: error: x\nfoo\nb.zbr:2: note: y\n").len == 2
+    assert dirOf("C:\\p\\zebra-ide.json") == "C:/p" and dirOf("m.json") == "." and joinPath("/r", ".") == "/r" and joinPath("/r", "sub") == "/r/sub"
+
+    # a real manifest against the real compiler
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    assert zopt != nil, "ZEBRA_COMPILER must be set"
+    var zebra: str = zopt!.replace("\\", "/")
+    Dir.createAll("gates_tmp/proj")
+    File.write("gates_tmp/proj/ok.zbr", "def main()\n    print(\"gate-ok\")\n")
+    File.write("gates_tmp/proj/bad.zbr", "def main()\n    var x: int = \"no\"\n")
+    var sb = StringBuilder()
+    sb.append("{\"name\":\"gates-fixture\",\"build\":{\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\"},\"gates\":[")
+    sb.append("{\"name\":\"good\",\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\",\"expect\":\"resolved OK\"},")
+    sb.append("{\"name\":\"bad\",\"cmd\":[\"" + zebra + "\",\"-c\",\"bad.zbr\"],\"cwd\":\"proj\"},")
+    sb.append("{\"name\":\"wrong-pass\",\"cmd\":[\"" + zebra + "\",\"-c\",\"ok.zbr\"],\"cwd\":\"proj\",\"expect\":\"this never prints\"},")
+    sb.append("{\"name\":\"slow\",\"cmd\":[\"" + zebra + "\",\"lsp\"],\"cwd\":\"proj\",\"timeout_ms\":300}")
+    sb.append("]}")
+    var manifest: str = sb.build()
+    File.write("gates_tmp/zebra-ide.json", manifest)
+    var mopt = loadManifest("gates_tmp/zebra-ide.json")
+    assert mopt != nil, "manifest did not load"
+    var m: Manifest = mopt!
+    assert m.name == "gates-fixture" and m.gates.len == 4 and m.build != nil
+    assert m.gates.at(0).cwd == "gates_tmp/proj", "cwd should be joined to the manifest dir, got " + m.gates.at(0).cwd
+    assert m.find("bad") != nil and m.find("nope") == nil
+
+    var good: GateRun = runToEnd(m.gates.at(0))
+    assert good.done and good.exit_code == 0 and good.ok, "good gate: exit " + good.exit_code.toString() + " out=" + good.output
+    var bad: GateRun = runToEnd(m.gates.at(1))
+    assert bad.done and bad.exit_code != 0 and not bad.ok, "bad gate should fail"
+    assert bad.diags.len >= 1, "expected a parsed diagnostic, output: " + bad.output
+    assert bad.diags.at(0).path.endsWith("bad.zbr") and bad.diags.at(0).line == 2, "diag " + bad.diags.at(0).path + ":" + bad.diags.at(0).line.toString()
+    var wp: GateRun = runToEnd(m.gates.at(2))
+    assert wp.exit_code == 0 and not wp.ok, "pass-string missing must fail the gate"
+    var slow: GateRun = runToEnd(m.gates.at(3))
+    assert slow.timed_out and slow.verdict() == "TIMEOUT", "lsp server should be killed by the 300 ms timeout"
+    assert loadManifest("gates_tmp/missing.json") == nil
+    print("gates_test: ok")

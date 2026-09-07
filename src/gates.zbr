@@ -1,0 +1,280 @@
+# gates.zbr — a project's gates, run headless or from the IDE (plan P3, half one).
+#
+#   zebra src/gates.zbr -- <manifest.json> [gate ...]   run gates, print verdicts,
+#                                                        exit = number failed
+#
+# The manifest (JSON; Zebra has no TOML) lives in the project root:
+#
+#   { "name": "zebra-language",
+#     "build": { "cmd": ["zig", "build"], "cwd": "." },
+#     "gates": [
+#       { "name": "smoke",      "cmd": ["bash", "tools/selfhost_smoke.sh"],
+#         "expect": "passed", "timeout_ms": 900000 },
+#       { "name": "round-trip", "cmd": ["bash", "tools/bootstrap_check.sh"],
+#         "expect": "round-trip clean" },
+#       { "name": "test-zig",   "cmd": ["zig", "build", "test-zig"] }
+#     ] }
+#
+# Per gate: `cmd` (argv), `cwd` (relative to the manifest's directory; default "."),
+# `expect` (a substring the output must contain; absent = exit code 0 is enough),
+# `timeout_ms` (default 600000). A gate PASSES when the exit code is 0 AND, if
+# given, `expect` appears in stdout+stderr. Every line of output that looks like a
+# compiler diagnostic — `path:line:col: error|warning|note: msg` (zig, zig cc,
+# clang) or `path:line: error: msg` (zebra) — becomes a Diag the IDE can turn
+# into markers; the CLI prints them under the verdict.
+#
+# Runs never block: GateRun wraps sys.spawnPipedIn and drains both pipes on each
+# poll(); the CLI polls in a sleep loop, the GUI polls from its tick. Registration
+# = a row in the manifest. Nothing here knows about Scintilla or libui.
+
+struct Diag
+    var path: str
+    var line: int          # 1-based, as printed
+    var col: int           # 1-based; 0 when the tool printed none
+    var severity: str      # "error" | "warning" | "note"
+    var message: str
+
+struct GateSpec
+    var name: str
+    var argv: List(str)
+    var cwd: str
+    var expect: str
+    var timeout_ms: int
+
+class Manifest
+    var name: str = ""
+    var root: str = ""          # directory the manifest lives in
+    var build: GateSpec? = nil
+    var gates: List(GateSpec)
+
+    cue init()
+        .gates = List(GateSpec)()
+
+    def find(name: str): GateSpec?
+        for g in .gates
+            if g.name == name
+                return g
+        return nil
+
+def dirOf(p: str): str
+    var s: str = p.replace("\\", "/")
+    var i: int = s.lastIndexOf("/")
+    if i < 0
+        return "."
+    if i == 0
+        return "/"
+    return s[0..i]
+
+def joinPath(root: str, rel: str): str
+    if rel == "" or rel == "."
+        return root
+    if rel.startsWith("/") or (rel.len > 1 and rel[1..2] == ":")
+        return rel
+    return root + "/" + rel
+
+# A JSON string element as a str. JsonValue has getStr(key) for objects but no
+# accessor for a bare scalar, so go through stringify and strip the quotes
+# (unescaping the two escapes a command word can plausibly carry).
+def jsonStr(v: JsonValue): str
+    var s: str = Json.stringify(v)
+    if s.len >= 2 and s.startsWith("\"") and s.endsWith("\"")
+        s = s[1..s.len - 1]
+    return s.replace("\\\\", "\\").replace("\\\"", "\"")
+
+def specFrom(j: JsonValue, root: str): GateSpec
+    var argv: List(str) = List(str)()
+    for a in j.getList("cmd")
+        argv.add(jsonStr(a))
+    var cwd: str = "."
+    if not j.at("cwd").isNull()
+        cwd = j.getStr("cwd")
+    var expect: str = ""
+    if not j.at("expect").isNull()
+        expect = j.getStr("expect")
+    var timeout: int = 600000
+    if not j.at("timeout_ms").isNull()
+        timeout = j.getInt("timeout_ms")
+    var name: str = ""
+    if not j.at("name").isNull()
+        name = j.getStr("name")
+    return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, timeout_ms: timeout)
+
+def loadManifest(path: str): Manifest?
+    if not File.exists(path)
+        return nil
+    var jv = Json.parse(File.read(path))
+    if jv == nil
+        return nil
+    var j = jv!
+    var m = Manifest()
+    m.root = dirOf(path)
+    if not j.at("name").isNull()
+        m.name = j.getStr("name")
+    if not j.at("build").isNull()
+        var b: GateSpec = specFrom(j.getObj("build"), m.root)
+        if b.name == ""
+            b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, timeout_ms: b.timeout_ms)
+        m.build = b
+    if not j.at("gates").isNull()
+        for g in j.getList("gates")
+            m.gates.add(specFrom(g, m.root))
+    return m
+
+# ── Diagnostic lines ─────────────────────────────────────────────────────────
+def isDigits(s: str): bool
+    if s.len == 0
+        return false
+    var i: int = 0
+    while i < s.len
+        var c: str = s[i..i+1]
+        if c < "0" or c > "9"
+            return false
+        i = i + 1
+    return true
+
+# `a/b.zig:12:5: error: msg`  |  `a/b.zbr:12: error: msg`  |  `C:\x\y.c:3:1: warning: msg`
+def parseDiag(line: str): Diag?
+    var sev: str = ""
+    var k: int = line.indexOf(": error: ")
+    if k >= 0
+        sev = "error"
+    else
+        k = line.indexOf(": warning: ")
+        if k >= 0
+            sev = "warning"
+        else
+            k = line.indexOf(": note: ")
+            if k >= 0
+                sev = "note"
+    if k < 0
+        return nil
+    var head: str = line[0..k]
+    var msg: str = line[k + sev.len + 4..line.len]
+    # head = path[:line[:col]]; split from the right so drive letters survive
+    var c2: int = head.lastIndexOf(":")
+    if c2 <= 0
+        return nil
+    var last: str = head[c2+1..head.len]
+    if not isDigits(last)
+        return nil
+    var rest: str = head[0..c2]
+    var c1: int = rest.lastIndexOf(":")
+    if c1 > 0 and isDigits(rest[c1+1..rest.len]) and c1 != 1
+        return Diag(path: rest[0..c1], line: rest[c1+1..rest.len].toInt(), col: last.toInt(), severity: sev, message: msg)
+    return Diag(path: rest, line: last.toInt(), col: 0, severity: sev, message: msg)
+
+def diagsIn(output: str): List(Diag)
+    var out: List(Diag) = List(Diag)()
+    for l in output.split("\n")
+        if parseDiag(l) as d
+            out.add(d)
+    return out
+
+# ── Running ──────────────────────────────────────────────────────────────────
+class GateRun
+    var spec: GateSpec
+    var proc: SysProcess? = nil
+    var output: str = ""
+    var started_ms: int = 0        # DateTime epoch ms (BUG-345: Timer cannot be a field type)
+    var elapsed_ms: int = 0
+    var done: bool = false
+    var timed_out: bool = false
+    var exit_code: int = -1
+    var ok: bool = false
+    var diags: List(Diag)
+
+    cue init(s: GateSpec)
+        .spec = s
+        .diags = List(Diag)()
+
+    def start(): bool
+        var p = sys.spawnPipedIn(.spec.argv, .spec.cwd)
+        if not p.isRunning() and p.exitCode() < 0
+            .done = true
+            .output = "could not start: " + .spec.argv.join(" ")
+            return false
+        .proc = p
+        .started_ms = DateTime.now().epoch_ms
+        return true
+
+    # Drain the pipes; returns true once the run has finished (result fields set).
+    def poll(): bool
+        if .done
+            return true
+        if .proc as p
+            .output = .output + p.readAvailable() + p.readErrAvailable()
+            .elapsed_ms = DateTime.now().epoch_ms - .started_ms
+            if p.isRunning()
+                if .elapsed_ms > .spec.timeout_ms
+                    p.kill()
+                    .timed_out = true
+                    .done = true
+                return .done
+            .output = .output + p.readAvailable() + p.readErrAvailable()
+            .exit_code = p.exitCode()
+            .done = true
+        else
+            .done = true
+        .diags = diagsIn(.output)
+        var pass_seen: bool = .spec.expect == "" or .output.contains(.spec.expect)
+        .ok = (.exit_code == 0) and pass_seen and not .timed_out
+        return true
+
+    def verdict(): str
+        if not .done
+            return "RUNNING"
+        if .timed_out
+            return "TIMEOUT"
+        if .ok
+            return "PASS"
+        return "FAIL"
+
+# Blocking convenience for the CLI and tests.
+def runToEnd(spec: GateSpec): GateRun
+    var r = GateRun(spec)
+    if r.start()
+        while not r.poll()
+            sys.sleep(25)
+    else
+        r.poll()
+    return r
+
+def main()
+    var args: List(str) = sys.args()
+    if args.len < 2
+        print("usage: gates <manifest.json> [gate ...]")
+        sys.exit(2)
+    var mopt = loadManifest(args.at(1))
+    if mopt == nil
+        print("gates: cannot read manifest " + args.at(1))
+        sys.exit(2)
+    var m: Manifest = mopt!
+    var wanted: List(str) = List(str)()
+    var ai: int = 2
+    while ai < args.len
+        wanted.add(args.at(ai))
+        ai = ai + 1
+    var failed: int = 0
+    var ran: int = 0
+    for g in m.gates
+        if wanted.len > 0 and not wanted.contains(g.name)
+            continue
+        ran = ran + 1
+        var r: GateRun = runToEnd(g)
+        print(r.verdict() + "  " + g.name + "  (" + r.elapsed_ms.toString() + " ms, exit " + r.exit_code.toString() + ")")
+        for d in r.diags
+            print("    " + d.path + ":" + d.line.toString() + ":" + d.col.toString() + ": " + d.severity + ": " + d.message)
+        if not r.ok
+            failed = failed + 1
+            # the last lines of output are usually the reason; keep it short
+            var lines: List(str) = r.output.split("\n")
+            var from: int = 0
+            if lines.len > 8
+                from = lines.len - 8
+            var li: int = 0
+            for l in lines
+                if li >= from and l.trim() != ""
+                    print("    | " + l)
+                li = li + 1
+    print(m.name + ": " + (ran - failed).toString() + "/" + ran.toString() + " gates passed")
+    sys.exit(failed)
