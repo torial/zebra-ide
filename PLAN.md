@@ -215,11 +215,42 @@ Docket (from tonight): scope-aware references via the Resolver (v2);
   run on Windows before trusting it.
 
 
-## Status 2026-09-07 (appended; the sections above are the plan as written)
+## Status 2026-09-07, end of day (supersedes the earlier status; sections above are the plan as written)
 
-Landed, all on `main` locally, nothing pushed: P0 hatch + tabs (d23e2de), P1 styler
-(84969e7), first IDE slice (a7eab49), Scintilla event bridge (zig-libui-ng e1b68d3 +
-compiler d5e5456), P2 buffers/document pointers (this commit). Gate: `bash tools/check.sh`.
-Next in agreed order: Build button + gate manifest (headless `gates.zbr` runner first),
-then the DAP client over `zebra debug --listen`. Owed by Sean: Windows runtime witness;
-push zig-libui-ng then bump the pin in zebra-language selfhost/main.zbr luiBuildZon.
+All plan phases P0-P4 are landed on `main` locally in three repos, NOTHING PUSHED:
+
+- zebra-language (288 commits ahead of origin/main as of tonight): P0 hatch + tabs
+  (d23e2de), P1 styler (84969e7), event bridge (d5e5456), sys builtins for P3
+  (`spawnPipedIn`, `exitCode`, `readStdinAvailable`, `stdinClosed`, `writeStdout`,
+  `--` passthrough; BUG-347), `zebra debug` NATIVE relay `dbgRunSession` in
+  selfhost/main.zbr (52c123a, merged f010343; `--listen` still delegates to the
+  bootstrap), comment reconcile b375941. New gates: tools/libui_section_check.sh,
+  tools/win_sema_check.sh, tools/styler_test.sh; tools/bump_libui_pin.sh ready.
+- zig-libui-ng e1b68d3 (1 ahead): `uiScintillaOnNotify` + `Scintilla.OnNotify`.
+- zebra-ide 48041ce: ide.zbr (MVU, 8-tab row, panes as editors), lsp/dap/transport/
+  buffers/gates/textops/sci modules, tools/check.sh (9 steps, all green in the
+  container), crew room seated (.claude/agents, .claude/crew/LOG.md), README with
+  the first-run checklist.
+
+The compiler pin in `selfhost/main.zbr luiBuildZon` still points at zig-libui-ng
+93c7f54b, which LACKS OnNotify; all event code is `@hasDecl`-guarded, so the build
+works but auto-indent / margin-click / dirty-tracking via notify are inert until
+the pin moves. That is by design until Sean pushes.
+
+Owed by Sean (in this order):
+1. Windows first run per README "First-run checklist" (nothing has been run with a
+   window open; every layer below the window has a headless test that has been seen red).
+2. `git push` zig-libui-ng, then in zebra-language `bash tools/bump_libui_pin.sh e1b68d3`
+   (or the pushed sha), rebuild, rerun checklist step 3 and 6.
+3. Delete `_to_delete/` in zebra-ide and in the wiki (the mount forbids deletes).
+4. Review the design calls recorded in BUGS.md BUG-336..349 (341, 342, 345, 346 open,
+   worked around in this repo with the BUG number beside each workaround).
+5. Push zebra-language / zebra-ide when tactically right.
+
+For the next Claude session (any model): read README.md, then `.claude/crew/LOG.md`
+(the refuter's and advocate's findings and what was done about them), then this file.
+Open worklist, none started: cleanroom seat uncalibrated; multi-file rename loop never
+executed against a real workspace; variables pane; clangd / zls clients; plugins
+(DynLib + gate manifest is the intended route); Haiku; `--listen` port to native;
+win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
+waiting on the push above, not on code.
