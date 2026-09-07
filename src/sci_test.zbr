@@ -1,0 +1,11 @@
+# sci_test.zbr — the constants module loads and exposes; a couple of known ids pinned.
+use sci exposing SCI_SETTEXT, SCI_GETLENGTH, SCI_GOTOLINE, STYLE_DEFAULT, INDIC_SQUIGGLE, SCN_MODIFIED
+
+def main()
+    assert SCI_SETTEXT == 2181
+    assert SCI_GETLENGTH == 2006
+    assert SCI_GOTOLINE == 2024
+    assert STYLE_DEFAULT == 32
+    assert INDIC_SQUIGGLE == 1
+    assert SCN_MODIFIED == 2008
+    print("sci_test: ok")
