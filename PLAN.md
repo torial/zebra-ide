@@ -200,3 +200,16 @@ server configs. Testable headless against `zebra lsp` in the container.
 
 Docket (from tonight): scope-aware references via the Resolver (v2);
 `workspace/symbol`; multi-file open-document set = the project's `.zbr` files.
+
+## 8. P0 status (2026-09-07, early)
+
+- [x] Language capability the IDE needs first: `sys.spawnPiped` — merged into
+  zebra-language main (44225e4). Found on the way: `sys.spawn` never compiled on
+  Linux (no `std.posix.waitpid` in 0.16); `sys.setenv` did not reach children on
+  POSIX without libc (now every spawn passes inherited environ + overrides).
+- [ ] `src/lsp.zbr` — the LSP client (next; headless-testable against `zebra lsp`).
+- [ ] `editor.sci()` hatch + `Gui` tab entry (laptop, GUI build).
+- [ ] `zig-libui-ng/build.zig` Haiku backend selection.
+- Windows-only code written blind this round: `PeekNamedPipe`/`ReadFile` externs in
+  `_sys_pipe_read_available`. `test/sys_spawn_piped_test.zbr` is the control to
+  run on Windows before trusting it.
