@@ -1,0 +1,44 @@
+# buffers_test — BufferSet transitions, headless.  zebra src/buffers_test.zbr
+use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
+
+def main()
+    assert uriOf("C:\\Projects\\a b\\x.zbr") == "file:///C:/Projects/a b/x.zbr"
+    assert uriOf("/home/s/x.zbr") == "file:///home/s/x.zbr"
+    assert pathOfUri("file:///C:/Projects/x.zbr") == "C:/Projects/x.zbr"
+    assert pathOfUri("file:///home/s/x.zbr") == "/home/s/x.zbr"
+    assert pathOfUri(uriOf("/tmp/q.c")) == "/tmp/q.c"
+    assert langOf("a.zbr") == "zebra" and langOf("b.h") == "c" and langOf("build.zig.zon") == "zig" and langOf("README") == "text"
+    assert baseName("C:\\x\\y\\Lexer.zbr") == "Lexer.zbr" and baseName("plain") == "plain"
+
+    var bs = BufferSet()
+    assert bs.count() == 0 and bs.current == -1 and bs.cur() == nil
+    assert bs.open("/p/a.zbr", "aaa") == 0
+    assert bs.open("/p/b.c", "bbb") == 1
+    assert bs.current == 1 and bs.cur()!.lang == "c"
+    # re-open selects, does not duplicate
+    assert bs.open("/p/a.zbr", "ignored") == 0
+    assert bs.count() == 2 and bs.current == 0 and bs.cur()!.text == "aaa"
+    assert bs.findUri("file:///p/b.c") == 1 and bs.find("/nope") == -1
+    assert bs.label(0, false) == "a.zbr" and bs.label(1, true) == "b.c *" and bs.label(5, false) == ""
+    # close the current → previous becomes current
+    assert bs.close(0)
+    assert bs.count() == 1 and bs.current == 0 and bs.cur()!.path == "/p/b.c"
+    # close a buffer before the current shifts the index
+    bs.open("/p/c.zig", "c")
+    bs.open("/p/d.zig", "d")
+    bs.current = 2
+    assert bs.close(0)
+    assert bs.current == 1 and bs.cur()!.path == "/p/d.zig"
+    assert not bs.close(9)
+    # tab row is fixed
+    var k: int = 0
+    while bs.count() < MAX_TABS
+        bs.open("/p/f" + k.toString() + ".zbr", "")
+        k = k + 1
+    assert bs.open("/p/overflow.zbr", "") == -1
+    assert bs.count() == MAX_TABS
+    # closing everything
+    while bs.count() > 0
+        bs.close(0)
+    assert bs.current == -1 and bs.cur() == nil
+    print("buffers_test: ok")

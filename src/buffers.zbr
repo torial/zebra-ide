@@ -1,0 +1,131 @@
+# buffers.zbr — open documents, without a widget in sight (zebra-ide plan P2).
+#
+# A Buffer is everything the IDE knows about one open file that is NOT the text
+# Scintilla holds: path/uri/language, the Scintilla document pointer (0 until the
+# GUI assigns one; on the tui backend it stays 0 and `text` is the document), the
+# LSP version and last-sent text, and the view state Scintilla does NOT keep per
+# document (caret, first visible line) — saved on switch-away, restored on
+# switch-to. Undo history IS per document in Scintilla, so that needs no help.
+#
+# BufferSet is the bookkeeping: open (idempotent by path), close, current index,
+# lookup by path or uri, the fixed-slot tab labels. It is pure so
+# buffers_test.zbr can exercise every transition headless; ide.zbr owns the
+# Scintilla calls (create/set/release document) around these transitions.
+
+const MAX_TABS: int = 8            # fixed tab row (libui creates all widgets on frame 0)
+
+def uriOf(p: str): str
+    var s: str = p.replace("\\", "/")
+    if s.len > 1 and s[1..2] == ":"
+        return "file:///" + s
+    return "file://" + s
+
+def pathOfUri(u: str): str
+    var s: str = u
+    if s.startsWith("file:///") and s.len > 9 and s[9..10] == ":"
+        s = s[8..s.len]                                   # file:///C:/x → C:/x
+    else if s.startsWith("file://")
+        s = s[7..s.len]
+    return s.replace("%20", " ")
+
+def langOf(p: str): str
+    if p.endsWith(".zbr")
+        return "zebra"
+    if p.endsWith(".c") or p.endsWith(".h") or p.endsWith(".cpp") or p.endsWith(".cxx") or p.endsWith(".hpp")
+        return "c"
+    if p.endsWith(".zig") or p.endsWith(".zon")
+        return "zig"
+    return "text"
+
+def baseName(p: str): str
+    var s: str = p.replace("\\", "/")
+    var i: int = s.lastIndexOf("/")
+    if i < 0
+        return s
+    return s[i+1..s.len]
+
+class Buffer
+    var path: str = ""
+    var uri: str = ""
+    var lang: str = "text"
+    var docptr: int = 0            # Scintilla document (sptr_t); 0 = none yet / tui
+    var version: int = 1           # LSP document version
+    var last_sent: str = ""        # text the language server has
+    var text: str = ""             # the text, authoritative only while docptr == 0
+    var caret: int = 0             # saved view state
+    var first_line: int = 0
+    var opened_lsp: bool = false   # didOpen sent
+    var errors: int = 0
+    var warnings: int = 0
+
+    cue init(p: str, t: str)
+        .path = p
+        .uri = uriOf(p)
+        .lang = langOf(p)
+        .text = t
+        .last_sent = t
+
+class BufferSet
+    var items: List(Buffer)
+    var current: int = -1
+
+    cue init()
+        .items = List(Buffer)()
+
+    def count(): int
+        return .items.len
+
+    def find(p: str): int
+        var i: int = 0
+        for b in .items                  # BUG-344 (a field named `items`) fixed 2026-09-07
+            if b.path == p
+                return i
+            i = i + 1
+        return -1
+
+    def findUri(u: str): int
+        var i: int = 0
+        for b in .items
+            if b.uri == u
+                return i
+            i = i + 1
+        return -1
+
+    # Open (or re-select) a file. Returns its index, or -1 when the tab row is full.
+    def open(p: str, t: str): int
+        var i: int = .find(p)
+        if i >= 0
+            .current = i
+            return i
+        if .items.len >= MAX_TABS
+            return -1
+        .items.add(Buffer(p, t))
+        .current = .items.len - 1
+        return .current
+
+    def cur(): Buffer?
+        if .current < 0 or .current >= .items.len
+            return nil
+        return .items.at(.current)
+
+    # Close index i; the current buffer becomes the previous one (or none).
+    def close(i: int): bool
+        if i < 0 or i >= .items.len
+            return false
+        .items.remove(i)
+        if .items.len == 0
+            .current = -1
+        else if .current >= .items.len
+            .current = .items.len - 1
+        else if .current > i
+            .current = .current - 1
+        return true
+
+    # Label for tab slot k: "name", "name *" when dirty, "" for an empty slot.
+    def label(k: int, dirty: bool): str
+        if k >= .items.len
+            return ""
+        var s: str = baseName(.items.at(k).path)
+        if dirty
+            s = s + " *"
+        return s

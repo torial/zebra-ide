@@ -23,8 +23,10 @@
 # the unit everything else speaks (Scintilla, LSP, the compiler's diagnostics).
 #
 # Known limits, stated rather than hidden:
-#   * one document (multi-file = document pointers, plan P2, next);
-#   * uiTab has no rename, so the dirty flag lives in the window's status line;
+#   * many documents in ONE Scintilla control via document pointers (plan P2):
+#     each Buffer owns an SCI_CREATEDOCUMENT; switching is SCI_SETDOCPOINTER,
+#     which keeps undo history per document; caret/scroll are saved by hand.
+#     Tabs are a fixed row of MAX_TABS g.buttonId buttons (uiTab cannot relabel).
 #   * no keyboard shortcuts: libui exposes no key events for Scintilla, and
 #     Scintilla's own SCI_ASSIGNCMDKEY only maps keys to Scintilla commands;
 #   * events arrive through the notify bridge (editor.takeModified /
@@ -33,7 +35,8 @@
 #     1-in-10-ticks fallback so the tui backend (no events) still works.
 
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
-use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT
+use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
+use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER
 
 # ── Constants of this program ──────────────────────────────────────────────
 const INDIC_ERROR: int = 8          # indicator slots 8..31 are free for containers
@@ -50,21 +53,17 @@ class Model
     var refs: CodeEditor? = nil          # references pane (read-only)
     var outline: CodeEditor? = nil       # symbols pane (read-only)
     var lsp: LspClient? = nil
-    var path: str = ""
-    var uri: str = ""
-    var version: int = 0
+    var bufs: BufferSet
     var status: str = "no file"
-    var last_sent: str = ""              # text the server has
     var pending_text: str = ""           # text seen last tick (for quiet detection)
     var quiet: int = 0
-    var diag_applied: int = 0            # version of diagnostics drawn
-    var diag_seen: int = 0               # bumps when new diagnostics arrive
-    var last_diag_count: int = -1
+    var base_doc: int = 0                # the control's original document (kept alive, unused)
     var def_id: int = 0
     var refs_id: int = 0
     var sym_id: int = 0
     var rename_id: int = 0
     var ref_lines: List(int)             # pane line -> source line (0-based)
+    var ref_uris: List(str)
     var sym_lines: List(int)
     var new_name: str = ""
     var lsp_ok: bool = false
@@ -75,7 +74,9 @@ class Model
 
     cue init()
         .ref_lines = List(int)()
+        .ref_uris = List(str)()
         .sym_lines = List(int)()
+        .bufs = BufferSet()
 
 union Msg
     tick
@@ -88,23 +89,10 @@ union Msg
     jump_ref
     jump_sym
     next_bookmark
+    select_tab: int
+    close_tab
 
 # ── Helpers ────────────────────────────────────────────────────────────────
-def toUri(p: str): str
-    var s: str = p.replace("\\", "/")
-    if s.len > 1 and s[1..2] == ":"
-        return "file:///" + s
-    return "file://" + s
-
-def langIdFor(p: str): str
-    if p.endsWith(".zbr")
-        return "zebra"
-    if p.endsWith(".c") or p.endsWith(".h")
-        return "c"
-    if p.endsWith(".zig")
-        return "zig"
-    return "plaintext"
-
 def cursorLine(ed: CodeEditor): int
     var pos: int = ed.sci(SCI_GETCURRENTPOS, 0, 0)
     return ed.sci(SCI_LINEFROMPOSITION, pos, 0)
@@ -245,27 +233,106 @@ def startLsp(m: Model)
         m.status = "could not start zebra lsp"
         return
     m.lsp = c
-    c.initialize(toUri(sys.cwd()))
+    c.initialize(uriOf(sys.cwd()))
     m.lsp_ok = true
 
-def loadFile(m: Model, p: str)
+# ── Documents: one control, many Scintilla documents ─────────────────────────
+# Save the view state Scintilla does not keep per document.
+def saveView(m: Model)
+    if m.bufs.cur() as b
+        b.caret = m.editor!.sci(SCI_GETCURRENTPOS, 0, 0)
+        b.first_line = m.editor!.sci(SCI_GETFIRSTVISIBLELINE, 0, 0)
+        if b.docptr == 0
+            b.text = m.editor!.getText()        # tui: the text lives in the Buffer
+
+# Make buffer i current in the control. Works with docptr (libui) or text (tui).
+def showBuffer(m: Model, i: int)
+    var ed: CodeEditor = m.editor!
+    var b: Buffer = m.bufs.items.at(i)
+    m.bufs.current = i
+    ed.setLanguage(b.lang)
+    if b.docptr != 0
+        ed.sci(SCI_SETDOCPOINTER, 0, b.docptr)
+        ed.restyle()
+    else
+        ed.setText(b.text)
+    ed.sci(SCI_GOTOPOS, b.caret, 0)
+    ed.sci(SCI_SETFIRSTVISIBLELINE, b.first_line, 0)
+    m.pending_text = ed.getText()
+    m.quiet = 0
+    m.errors = b.errors
+    m.warnings = b.warnings
+    if m.lsp as c
+        if c.initialized and c.diagnostics.get(b.uri) == nil and b.opened_lsp
+            c.diagnostics.put(b.uri, List(LspDiagnostic)())   # nothing pending: overlay stays as drawn
+    # diagnostics for this document, if any arrived while it was hidden
+    if m.lsp as c2
+        if c2.diagnostics.get(b.uri) as ds
+            applyDiagnostics(m, ds)
+            c2.diagnostics.remove(b.uri)
+
+def switchTo(m: Model, i: int)
+    if i < 0 or i >= m.bufs.count() or i == m.bufs.current
+        return
+    saveView(m)
+    showBuffer(m, i)
+
+def openFile(m: Model, p: str)
+    var existing: int = m.bufs.find(p)
+    if existing >= 0
+        switchTo(m, existing)
+        m.status = "switched"
+        return
     if not File.exists(p)
         m.status = "not found: " + p
         return
+    if m.bufs.count() >= MAX_TABS
+        m.status = "tab row is full (" + MAX_TABS.toString() + ") — close one first"
+        return
     var text: str = File.read(p)
-    m.path = p
-    m.uri = toUri(p)
-    m.version = 1
-    m.editor!.setLanguage(langIdFor(p))
-    m.editor!.setText(text)
-    m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
-    m.last_sent = text
+    saveView(m)
+    var i: int = m.bufs.open(p, text)
+    var b: Buffer = m.bufs.items.at(i)
+    var ed: CodeEditor = m.editor!
+    # A fresh Scintilla document (refcount 1, ours). On tui the hatch returns 0 and
+    # the Buffer's text is the document.
+    b.docptr = ed.sci(SCI_CREATEDOCUMENT, 0, 0)
+    if b.docptr != 0
+        ed.sci(SCI_SETDOCPOINTER, 0, b.docptr)
+    ed.setLanguage(b.lang)
+    ed.setText(text)
+    ed.sci(SCI_EMPTYUNDOBUFFER, 0, 0)
+    ed.sci(SCI_SETSAVEPOINT, 0, 0)
+    m.bufs.current = i
     m.pending_text = text
     m.quiet = 0
+    m.errors = 0
+    m.warnings = 0
     if m.lsp as c
         if c.initialized
-            c.didOpen(m.uri, langIdFor(p), 1, text)
-    m.status = "opened"
+            c.didOpen(b.uri, b.lang, 1, text)
+            b.opened_lsp = true
+    m.status = "opened " + baseName(p)
+
+def closeCurrent(m: Model)
+    var i: int = m.bufs.current
+    if i < 0
+        return
+    var b: Buffer = m.bufs.items.at(i)
+    if m.lsp as c
+        if b.opened_lsp
+            c.didClose(b.uri)
+    var doc: int = b.docptr
+    m.bufs.close(i)
+    if m.bufs.count() > 0
+        showBuffer(m, m.bufs.current)
+    else
+        m.editor!.sci(SCI_SETDOCPOINTER, 0, m.base_doc)
+        m.editor!.setText("")
+        m.pending_text = ""
+    if doc != 0
+        m.editor!.sci(SCI_RELEASEDOCUMENT, 0, doc)
+    m.status = "closed " + baseName(b.path)
 
 def ideInit(): Model
     var m = Model()
@@ -278,8 +345,10 @@ def ideInit(): Model
     m.outline!.setText("(symbols appear here)")
     startLsp(m)
     var args: List(str) = sys.args()
-    if args.len > 1
-        loadFile(m, args.at(1))
+    var ai: int = 1
+    while ai < args.len
+        openFile(m, args.at(ai))
+        ai = ai + 1
     return m
 
 def isBlockOpener(lang: str, prev: str): bool
@@ -322,12 +391,57 @@ def toggleBookmark(ed: CodeEditor, line: int)
     else
         ed.sci(SCI_MARKERADD, line, MARKER_BOOKMARK)
 
+# Apply a rename's WorkspaceEdit everywhere it points: open buffers are edited in
+# their Scintilla documents (switching document pointers under the hood, view
+# state restored); files that are not open are rewritten on disk and said so.
+def applyWorkspaceEdit(m: Model, changes: JsonValue): str
+    var start_idx: int = m.bufs.current
+    var line: int = cursorLine(m.editor!)
+    var col: int = cursorCol(m.editor!)
+    var n_open: int = 0
+    var n_disk: int = 0
+    for u in changes.keys()
+        var bi: int = m.bufs.findUri(u)
+        if bi >= 0
+            switchTo(m, bi)
+            var edited: str = applyEdits(m.editor!.getText(), changes, u)
+            m.editor!.setText(edited)
+            n_open = n_open + 1
+        else
+            var p: str = pathOfUri(u)
+            if File.exists(p)
+                File.write(p, applyEdits(File.read(p), changes, u))
+                n_disk = n_disk + 1
+    if start_idx >= 0
+        switchTo(m, start_idx)
+        gotoLineCol(m.editor!, line, col)
+    return "renamed in " + n_open.toString() + " open buffer(s), " + n_disk.toString() + " file(s) on disk"
+
 # Every ~100 ms: poll the server, push edits after a quiet spell, apply replies.
 def tick(m: Model)
     if not m.overlay_ready
         # view() has rendered once by the time the first tick is processed, so
         # the native control exists and accepts messages (on tui they are no-ops).
         configureOverlay(m.editor!)
+        m.base_doc = m.editor!.sci(SCI_GETDOCPOINTER, 0, 0)
+        if m.base_doc != 0
+            m.editor!.sci(SCI_ADDREFDOCUMENT, 0, m.base_doc)
+        # files given on the command line were opened before the control existed:
+        # give each its own document now (their text is still in the Buffers)
+        var k: int = 0
+        while k < m.bufs.count()
+            var bk: Buffer = m.bufs.items.at(k)
+            if bk.docptr == 0
+                bk.docptr = m.editor!.sci(SCI_CREATEDOCUMENT, 0, 0)
+                if bk.docptr != 0
+                    m.editor!.sci(SCI_SETDOCPOINTER, 0, bk.docptr)
+                    m.editor!.setLanguage(bk.lang)
+                    m.editor!.setText(bk.text)
+                    m.editor!.sci(SCI_EMPTYUNDOBUFFER, 0, 0)
+                    m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+            k = k + 1
+        if m.bufs.count() > 0
+            showBuffer(m, m.bufs.current)
         m.overlay_ready = true
     m.tick_n = m.tick_n + 1
     # events from the notify bridge (no-ops on tui)
@@ -341,30 +455,37 @@ def tick(m: Model)
         return
     var c: LspClient = m.lsp!
     c.poll()
-    if c.initialized and m.uri != "" and m.version == 1 and m.last_sent == m.pending_text and m.diag_seen == 0 and c.diagnostics.get(m.uri) == nil
-        # initialize finished after the file was loaded: open it now (once)
-        c.didOpen(m.uri, langIdFor(m.path), 1, m.last_sent)
-        m.diag_seen = -1
-    if m.uri == ""
-        return
-    if modified or m.tick_n % 10 == 0 or m.pending_text != m.last_sent
-        var now: str = m.editor!.getText()
-        if now != m.pending_text
-            m.pending_text = now
-            m.quiet = 0
-        else if now != m.last_sent
-            m.quiet = m.quiet + 1
-            if m.quiet >= DIRTY_TICKS
-                m.version = m.version + 1
-                c.didChange(m.uri, m.version, now)
-                m.last_sent = now
+    # late initialize: open every buffer the server has not seen
+    if c.initialized
+        var oi: int = 0
+        while oi < m.bufs.count()
+            var ob: Buffer = m.bufs.items.at(oi)
+            if not ob.opened_lsp
+                var otext: str = ob.text
+                if oi == m.bufs.current
+                    otext = m.editor!.getText()
+                c.didOpen(ob.uri, ob.lang, ob.version, otext)
+                ob.last_sent = otext
+                ob.opened_lsp = true
+            oi = oi + 1
+    if m.bufs.cur() as cb
+        if modified or m.tick_n % 10 == 0 or m.pending_text != cb.last_sent
+            var now: str = m.editor!.getText()
+            if now != m.pending_text
+                m.pending_text = now
                 m.quiet = 0
-    if c.diagnostics.get(m.uri) as ds
-        if ds.len != m.last_diag_count or m.diag_seen != m.diag_applied
+            else if now != cb.last_sent
+                m.quiet = m.quiet + 1
+                if m.quiet >= DIRTY_TICKS
+                    cb.version = cb.version + 1
+                    c.didChange(cb.uri, cb.version, now)
+                    cb.last_sent = now
+                    m.quiet = 0
+        if c.diagnostics.get(cb.uri) as ds
             applyDiagnostics(m, ds)
-            m.last_diag_count = ds.len
-            m.diag_applied = m.diag_seen
-            c.diagnostics.remove(m.uri)      # consumed; the next publish re-arms
+            cb.errors = m.errors
+            cb.warnings = m.warnings
+            c.diagnostics.remove(cb.uri)      # consumed; the next publish re-arms
     if m.def_id != 0
         if c.takeReply(m.def_id) as r
             m.def_id = 0
@@ -372,17 +493,23 @@ def tick(m: Model)
             if locs.len == 0
                 m.status = "no definition"
             else
-                gotoLineCol(m.editor!, locs.at(0).line, locs.at(0).col)
-                m.status = "definition: line " + (locs.at(0).line + 1).toString()
+                var target: LspLocation = locs.at(0)
+                if m.bufs.cur() as cb2
+                    if target.uri != cb2.uri
+                        openFile(m, pathOfUri(target.uri))
+                gotoLineCol(m.editor!, target.line, target.col)
+                m.status = "definition: " + baseName(pathOfUri(target.uri)) + ":" + (target.line + 1).toString()
     if m.refs_id != 0
         if c.takeReply(m.refs_id) as r
             m.refs_id = 0
             var locs: List(LspLocation) = c.locations(r)
             var sb = StringBuilder()
             m.ref_lines = List(int)()
+            m.ref_uris = List(str)()
             for l in locs
-                sb.append((l.line + 1).toString() + ":" + (l.col + 1).toString() + "\n")
+                sb.append(baseName(pathOfUri(l.uri)) + ":" + (l.line + 1).toString() + ":" + (l.col + 1).toString() + "\n")
                 m.ref_lines.add(l.line)
+                m.ref_uris.add(l.uri)
             m.refs!.setReadOnly(false)
             m.refs!.setText(sb.build())
             m.refs!.setReadOnly(true)
@@ -403,12 +530,7 @@ def tick(m: Model)
             if res.isNull() or res.at("changes").isNull()
                 m.status = "rename: server returned no edits"
             else
-                var line: int = cursorLine(m.editor!)
-                var col: int = cursorCol(m.editor!)
-                var edited: str = applyEdits(m.editor!.getText(), res.getObj("changes"), m.uri)
-                m.editor!.setText(edited)
-                gotoLineCol(m.editor!, line, col)
-                m.status = "renamed"
+                m.status = applyWorkspaceEdit(m, res.getObj("changes"))
 
 def update(m: Model, msg: Msg): Model
     branch msg
@@ -418,35 +540,48 @@ def update(m: Model, msg: Msg): Model
         on Msg.open_file
             return m        # dialog result is delivered through Msg by view (button-gated there)
         on Msg.save_file
-            if m.path == ""
+            if m.bufs.cur() as sb
+                File.write(sb.path, m.editor!.getText())
+                m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+                m.status = "saved " + baseName(sb.path)
+            else
                 m.status = "nothing to save"
-                return m
-            File.write(m.path, m.editor!.getText())
-            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
-            m.status = "saved"
+            return m
+        on Msg.select_tab as ti
+            switchTo(m, ti)
+            return m
+        on Msg.close_tab
+            closeCurrent(m)
             return m
         on Msg.goto_def
             if m.lsp as c
-                m.def_id = c.definition(m.uri, cursorLine(m.editor!), cursorCol(m.editor!))
+                if m.bufs.cur() as b
+                    m.def_id = c.definition(b.uri, cursorLine(m.editor!), cursorCol(m.editor!))
             return m
         on Msg.find_refs
             if m.lsp as c
-                m.refs_id = c.references(m.uri, cursorLine(m.editor!), cursorCol(m.editor!))
+                if m.bufs.cur() as b
+                    m.refs_id = c.references(b.uri, cursorLine(m.editor!), cursorCol(m.editor!))
             return m
         on Msg.symbols
             if m.lsp as c
-                m.sym_id = c.documentSymbol(m.uri)
+                if m.bufs.cur() as b
+                    m.sym_id = c.documentSymbol(b.uri)
             return m
         on Msg.rename
             if m.new_name == ""
                 m.status = "rename: type the new name first"
                 return m
             if m.lsp as c
-                m.rename_id = c.rename(m.uri, cursorLine(m.editor!), cursorCol(m.editor!), m.new_name)
+                if m.bufs.cur() as b
+                    m.rename_id = c.rename(b.uri, cursorLine(m.editor!), cursorCol(m.editor!), m.new_name)
             return m
         on Msg.jump_ref
             var i: int = cursorLine(m.refs!)
             if i < m.ref_lines.len
+                if m.bufs.cur() as b
+                    if m.ref_uris.at(i) != b.uri
+                        openFile(m, pathOfUri(m.ref_uris.at(i)))
                 gotoLineCol(m.editor!, m.ref_lines.at(i), 0)
             return m
         on Msg.jump_sym
@@ -470,7 +605,7 @@ def view(g: Gui, m: Model)
             if g.button("Open…")
                 var p = g.openFile()
                 if p as path
-                    loadFile(m, path)
+                    openFile(m, path)
             if g.button("Save")
                 g.send(Msg.save_file)
             if g.button("Definition")
@@ -484,6 +619,19 @@ def view(g: Gui, m: Model)
                 g.send(Msg.rename)
             if g.button("Next bookmark")
                 g.send(Msg.next_bookmark)
+            if g.button("Close")
+                g.send(Msg.close_tab)
+        # fixed tab row: MAX_TABS buttons keyed by slot, relabelled as files open
+        using g.hbox("##tabs", false)
+            var dirty_now: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+            var t: int = 0
+            while t < MAX_TABS
+                var lbl: str = m.bufs.label(t, dirty_now and t == m.bufs.current)
+                if lbl == ""
+                    lbl = "·"
+                if g.buttonId("##tab" + t.toString(), lbl)
+                    g.send(Msg.select_tab(t))
+                t = t + 1
         g.separator()
         using g.hbox("##body", true)
             m.editor!.render(g, "##code", 0, 0)
@@ -503,7 +651,10 @@ def view(g: Gui, m: Model)
         var lsp_s: str = "no lsp"
         if m.lsp_ok
             lsp_s = "zebra lsp"
-        g.text(m.path + dirty + "   Ln " + (cursorLine(m.editor!) + 1).toString() + ", Col " + (cursorCol(m.editor!) + 1).toString()
+        var cur_path: str = ""
+        if m.bufs.cur() as vb
+            cur_path = vb.path
+        g.text(cur_path + dirty + "   Ln " + (cursorLine(m.editor!) + 1).toString() + ", Col " + (cursorCol(m.editor!) + 1).toString()
                + "   " + m.editor!.getLanguage() + "   " + lsp_s + "   errors " + m.errors.toString() + "  warnings " + m.warnings.toString()
                + "   " + m.status)
 
