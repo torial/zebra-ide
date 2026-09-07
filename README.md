@@ -65,7 +65,8 @@ window itself has none and has never been opened.
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 8 steps | — |
+| `src/textops.zbr` | WorkspaceEdit application, symbol outline, auto-indent decision (pure) | `textops_test.zbr` |
+| `tools/check.sh` | the gate: all of the above, 9 steps | — |
 
 ## Known limits (stated, not hidden)
 

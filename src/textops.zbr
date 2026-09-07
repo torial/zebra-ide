@@ -1,0 +1,91 @@
+# textops.zbr — the IDE's pure text helpers, kept out of ide.zbr so they can be
+# tested headless (advocate finding 7, 2026-09-07: these had no instrument).
+#   applyEdits        apply an LSP WorkspaceEdit's edits for one uri (back to front)
+#   symbolLines       a documentSymbol reply → outline text + line list
+#   indentFor         the auto-indent decision: previous line's indent, +4 after a block opener
+#   isBlockOpener     Zebra keywords / C-Zig braces
+
+def lineStartOffsets(text: str): List(int)
+    var offs: List(int) = List(int)()
+    offs.add(0)
+    var i: int = 0
+    while i < text.len
+        if text[i..i+1] == "\n"
+            offs.add(i + 1)
+        i = i + 1
+    return offs
+
+def applyEdits(text: str, edits: JsonValue, uri: str): str
+    var offs: List(int) = lineStartOffsets(text)
+    # collect (start, end, newText) then sort by start descending (insertion sort; edits are few)
+    var starts: List(int) = List(int)()
+    var ends: List(int) = List(int)()
+    var news: List(str) = List(str)()
+    for e in edits.getList(uri)
+        var rng = e.getObj("range")
+        var s = rng.getObj("start")
+        var en = rng.getObj("end")
+        starts.add(offs.at(s.getInt("line")) + s.getInt("character"))
+        ends.add(offs.at(en.getInt("line")) + en.getInt("character"))
+        news.add(e.getStr("newText"))
+    var order: List(int) = List(int)()
+    var k: int = 0
+    while k < starts.len
+        order.add(k)
+        k = k + 1
+    var a: int = 1
+    while a < order.len
+        var b: int = a
+        while b > 0 and starts.at(order.at(b - 1)) < starts.at(order.at(b))
+            var tmp: int = order.at(b - 1)
+            order.set(b - 1, order.at(b))
+            order.set(b, tmp)
+            b = b - 1
+        a = a + 1
+    var out: str = text
+    for idx in order
+        out = out[0..starts.at(idx)] + news.at(idx) + out[ends.at(idx)..out.len]
+    return out
+
+def symbolLines(reply: JsonValue, lines: List(int)): str
+    # DocumentSymbol[] (nested) or SymbolInformation[] (flat); both carry a name and a range.
+    # Returns the pane text (a StringBuilder parameter is const in Zebra — BUG-342).
+    var sink = StringBuilder()
+    for s in reply.getList("result")
+        var line: int = 0
+        if not s.at("location").isNull()
+            line = s.getObj("location").getObj("range").getObj("start").getInt("line")
+        else
+            line = s.getObj("range").getObj("start").getInt("line")
+        sink.append((line + 1).toString() + ": " + s.getStr("name") + "\n")
+        lines.add(line)
+    return sink.build()
+
+def isBlockOpener(lang: str, prev: str): bool
+    var t: str = prev.trim()
+    if lang == "zebra"
+        for kw in ["def ", "if ", "else", "elif ", "while ", "for ", "class ", "struct ", "union ", "branch ", "on ", "using ", "cue ", "test ", "interface ", "enum ", "capture", "namespace "]
+            if t.startsWith(kw) or t == kw.trim()
+                return true
+        return false
+    return t.endsWith("{") or t.endsWith("(")
+
+# The indentation to insert at the start of `line` (0-based) given the whole text:
+# the previous line's leading whitespace, plus one level after a block opener.
+def indentFor(lang: str, text: str, line: int): str
+    if line <= 0
+        return ""
+    var prev: str = ""
+    var i: int = 0
+    for l in text.split("\n")          # BUG-336: split().at() leaks Zig, so iterate
+        if i == line - 1
+            prev = l
+        i = i + 1
+    var indent: str = ""
+    var k: int = 0
+    while k < prev.len and (prev[k..k+1] == " " or prev[k..k+1] == "\t")
+        indent = indent + prev[k..k+1]
+        k = k + 1
+    if isBlockOpener(lang, prev)
+        indent = indent + "    "
+    return indent
