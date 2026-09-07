@@ -1,0 +1,444 @@
+# ide.zbr — zebra-ide, the program. Zebra + libui-ng + Scintilla + `zebra lsp`.
+#
+#   zebra --gui-backend=libui_ng src/ide.zbr        (deps beside the source)
+#   zebra --gui-backend=tui       src/ide.zbr        (compile control; editors are stubs)
+#
+# What this file is: the first slice that is an IDE rather than an editor —
+# one document, live diagnostics from the language server drawn as squiggles
+# and margin markers, go-to-definition, find-references, document symbols and
+# rename, all through two things that already exist: the LSP client (lsp.zbr)
+# and the raw Scintilla hatch (editor.sci / sciStr; ids in sci.zbr). No new
+# compiler builtins were needed for anything on this page.
+#
+# Shape (MVU, see QUICKSTART §30): the Model is a CLASS (mutated in place; a
+# struct would be copied into update and the edits lost), widgets are created on
+# frame 0 and only their contents change afterwards (libui is retained-mode:
+# the count and order of g.text/button/editor calls must be the same every
+# frame). view() sends Msg.tick every frame; update(tick) is where the LSP is
+# polled, dirty text is pushed, replies are applied. Nothing blocks.
+#
+# Panes are editors: the references list and the symbol outline are read-only
+# CodeEditors (language "text"). "Jump" reads the pane's cursor line and goes
+# there. This is deliberate: it needs no list widget, and lines are already
+# the unit everything else speaks (Scintilla, LSP, the compiler's diagnostics).
+#
+# Known limits, stated rather than hidden:
+#   * one document (multi-file = document pointers, plan P2, next);
+#   * uiTab has no rename, so the dirty flag lives in the window's status line;
+#   * no keyboard shortcuts: libui exposes no key events for Scintilla, and
+#     Scintilla's own SCI_ASSIGNCMDKEY only maps keys to Scintilla commands;
+#   * change detection is polling (getText compare per tick) until the WM_NOTIFY
+#     shim lands in libui_scintilla/win.cxx (then SCN_MODIFIED drives it).
+
+use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
+use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARGIN_SYMBOL, ANNOTATION_BOXED
+
+# ── Constants of this program ──────────────────────────────────────────────
+const INDIC_ERROR: int = 8          # indicator slots 8..31 are free for containers
+const INDIC_WARN: int = 9
+const MARKER_ERROR: int = 1         # marker numbers; 0 is left to the debugger phase
+const MARKER_WARN: int = 2
+const MARGIN_MARKS: int = 1         # margin 0 = line numbers (set by the editor); 1 = ours
+const DIRTY_TICKS: int = 3          # ticks (~100 ms each) of quiet before didChange
+const STYLE_ANNOT: int = 40         # style slot for inline diagnostic annotations
+
+class Model
+    var editor: CodeEditor? = nil
+    var refs: CodeEditor? = nil          # references pane (read-only)
+    var outline: CodeEditor? = nil       # symbols pane (read-only)
+    var lsp: LspClient? = nil
+    var path: str = ""
+    var uri: str = ""
+    var version: int = 0
+    var status: str = "no file"
+    var last_sent: str = ""              # text the server has
+    var pending_text: str = ""           # text seen last tick (for quiet detection)
+    var quiet: int = 0
+    var diag_applied: int = 0            # version of diagnostics drawn
+    var diag_seen: int = 0               # bumps when new diagnostics arrive
+    var last_diag_count: int = -1
+    var def_id: int = 0
+    var refs_id: int = 0
+    var sym_id: int = 0
+    var rename_id: int = 0
+    var ref_lines: List(int)             # pane line -> source line (0-based)
+    var sym_lines: List(int)
+    var new_name: str = ""
+    var lsp_ok: bool = false
+    var errors: int = 0
+    var warnings: int = 0
+    var overlay_ready: bool = false      # Scintilla exists only after the first render
+
+    cue init()
+        .ref_lines = List(int)()
+        .sym_lines = List(int)()
+
+union Msg
+    tick
+    open_file
+    save_file
+    goto_def
+    find_refs
+    symbols
+    rename
+    jump_ref
+    jump_sym
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+def toUri(p: str): str
+    var s: str = p.replace("\\", "/")
+    if s.len > 1 and s[1..2] == ":"
+        return "file:///" + s
+    return "file://" + s
+
+def langIdFor(p: str): str
+    if p.endsWith(".zbr")
+        return "zebra"
+    if p.endsWith(".c") or p.endsWith(".h")
+        return "c"
+    if p.endsWith(".zig")
+        return "zig"
+    return "plaintext"
+
+def cursorLine(ed: CodeEditor): int
+    var pos: int = ed.sci(SCI_GETCURRENTPOS, 0, 0)
+    return ed.sci(SCI_LINEFROMPOSITION, pos, 0)
+
+def cursorCol(ed: CodeEditor): int
+    var pos: int = ed.sci(SCI_GETCURRENTPOS, 0, 0)
+    return ed.sci(SCI_GETCOLUMN, pos, 0)
+
+def gotoLineCol(ed: CodeEditor, line: int, col: int)
+    var pos: int = ed.sci(SCI_POSITIONFROMLINE, line, 0) + col
+    ed.sci(SCI_GOTOPOS, pos, 0)
+    ed.sci(SCI_SCROLLCARET, 0, 0)
+
+# One-time Scintilla setup for the diagnostics overlay. Colours are 0xBBGGRR.
+def configureOverlay(ed: CodeEditor)
+    ed.sci(SCI_INDICSETSTYLE, INDIC_ERROR, INDIC_SQUIGGLE)
+    ed.sci(SCI_INDICSETFORE, INDIC_ERROR, 0x5c5ce0)      # #e05c5c
+    ed.sci(SCI_INDICSETSTYLE, INDIC_WARN, INDIC_SQUIGGLE)
+    ed.sci(SCI_INDICSETFORE, INDIC_WARN, 0x4fb8e0)       # #e0b84f
+    ed.sci(SCI_MARKERDEFINE, MARKER_ERROR, SC_MARK_SHORTARROW)
+    ed.sci(SCI_MARKERSETBACK, MARKER_ERROR, 0x5c5ce0)
+    ed.sci(SCI_MARKERSETFORE, MARKER_ERROR, 0x5c5ce0)
+    ed.sci(SCI_MARKERDEFINE, MARKER_WARN, SC_MARK_CIRCLE)
+    ed.sci(SCI_MARKERSETBACK, MARKER_WARN, 0x4fb8e0)
+    ed.sci(SCI_MARKERSETFORE, MARKER_WARN, 0x4fb8e0)
+    ed.sci(SCI_SETMARGINTYPEN, MARGIN_MARKS, SC_MARGIN_SYMBOL)
+    ed.sci(SCI_SETMARGINWIDTHN, MARGIN_MARKS, 16)
+    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 6)            # bits for markers 1 and 2
+    ed.sci(SCI_ANNOTATIONSETVISIBLE, ANNOTATION_BOXED, 0)
+    ed.sci(SCI_STYLESETFORE, STYLE_ANNOT, 0x9a9ad0)        # #d09a9a
+    ed.sci(SCI_STYLESETBACK, STYLE_ANNOT, 0x2f2823)
+    ed.sci(SCI_STYLESETITALIC, STYLE_ANNOT, 1)
+
+# Draw the server's diagnostics for the current document: squiggles under each
+# range, a marker in the margin, the message as a boxed annotation under the line.
+def applyDiagnostics(m: Model, ds: List(LspDiagnostic))
+    var ed: CodeEditor = m.editor!
+    var n: int = ed.sci(SCI_GETLENGTH, 0, 0)
+    ed.sci(SCI_SETINDICATORCURRENT, INDIC_ERROR, 0)
+    ed.sci(SCI_INDICATORCLEARRANGE, 0, n)
+    ed.sci(SCI_SETINDICATORCURRENT, INDIC_WARN, 0)
+    ed.sci(SCI_INDICATORCLEARRANGE, 0, n)
+    ed.sci(SCI_MARKERDELETEALL, MARKER_ERROR, 0)
+    ed.sci(SCI_MARKERDELETEALL, MARKER_WARN, 0)
+    ed.sci(SCI_ANNOTATIONCLEARALL, 0, 0)
+    m.errors = 0
+    m.warnings = 0
+    for d in ds
+        var is_err: bool = d.severity <= 1
+        var start: int = ed.sci(SCI_POSITIONFROMLINE, d.line, 0) + d.col
+        var stop: int = ed.sci(SCI_POSITIONFROMLINE, d.end_line, 0) + d.end_col
+        if stop <= start
+            stop = start + 1
+        if is_err
+            ed.sci(SCI_SETINDICATORCURRENT, INDIC_ERROR, 0)
+            ed.sci(SCI_MARKERADD, d.line, MARKER_ERROR)
+            m.errors = m.errors + 1
+        else
+            ed.sci(SCI_SETINDICATORCURRENT, INDIC_WARN, 0)
+            ed.sci(SCI_MARKERADD, d.line, MARKER_WARN)
+            m.warnings = m.warnings + 1
+        ed.sci(SCI_INDICATORFILLRANGE, start, stop - start)
+        ed.sciStr(SCI_ANNOTATIONSETTEXT, d.line, d.message)
+        ed.sci(SCI_ANNOTATIONSETSTYLE, d.line, STYLE_ANNOT)
+
+# Apply a WorkspaceEdit's edits for our uri to `text` (edits are applied from
+# the end of the document backwards so earlier offsets stay valid).
+def lineStartOffsets(text: str): List(int)
+    var offs: List(int) = List(int)()
+    offs.add(0)
+    var i: int = 0
+    while i < text.len
+        if text[i..i+1] == "\n"
+            offs.add(i + 1)
+        i = i + 1
+    return offs
+
+def applyEdits(text: str, edits: JsonValue, uri: str): str
+    var offs: List(int) = lineStartOffsets(text)
+    # collect (start, end, newText) then sort by start descending (insertion sort; edits are few)
+    var starts: List(int) = List(int)()
+    var ends: List(int) = List(int)()
+    var news: List(str) = List(str)()
+    for e in edits.getList(uri)
+        var rng = e.getObj("range")
+        var s = rng.getObj("start")
+        var en = rng.getObj("end")
+        starts.add(offs.at(s.getInt("line")) + s.getInt("character"))
+        ends.add(offs.at(en.getInt("line")) + en.getInt("character"))
+        news.add(e.getStr("newText"))
+    var order: List(int) = List(int)()
+    var k: int = 0
+    while k < starts.len
+        order.add(k)
+        k = k + 1
+    var a: int = 1
+    while a < order.len
+        var b: int = a
+        while b > 0 and starts.at(order.at(b - 1)) < starts.at(order.at(b))
+            var tmp: int = order.at(b - 1)
+            order.set(b - 1, order.at(b))
+            order.set(b, tmp)
+            b = b - 1
+        a = a + 1
+    var out: str = text
+    for idx in order
+        out = out[0..starts.at(idx)] + news.at(idx) + out[ends.at(idx)..out.len]
+    return out
+
+def symbolLines(reply: JsonValue, lines: List(int)): str
+    # DocumentSymbol[] (nested) or SymbolInformation[] (flat); both carry a name and a range.
+    # Returns the pane text (a StringBuilder parameter is const in Zebra — BUG-342).
+    var sink = StringBuilder()
+    for s in reply.getList("result")
+        var line: int = 0
+        if not s.at("location").isNull()
+            line = s.getObj("location").getObj("range").getObj("start").getInt("line")
+        else
+            line = s.getObj("range").getObj("start").getInt("line")
+        sink.append((line + 1).toString() + ": " + s.getStr("name") + "\n")
+        lines.add(line)
+    return sink.build()
+
+# ── Model lifecycle ────────────────────────────────────────────────────────
+def startLsp(m: Model)
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    if zopt == nil
+        m.status = "ZEBRA_COMPILER not set — no language server"
+        return
+    var argv: List(str) = List(str)()
+    argv.add(zopt!)
+    argv.add("lsp")
+    var c = LspClient()
+    if not c.start("zebra", argv)
+        m.status = "could not start zebra lsp"
+        return
+    m.lsp = c
+    c.initialize(toUri(sys.cwd()))
+    m.lsp_ok = true
+
+def loadFile(m: Model, p: str)
+    if not File.exists(p)
+        m.status = "not found: " + p
+        return
+    var text: str = File.read(p)
+    m.path = p
+    m.uri = toUri(p)
+    m.version = 1
+    m.editor!.setLanguage(langIdFor(p))
+    m.editor!.setText(text)
+    m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+    m.last_sent = text
+    m.pending_text = text
+    m.quiet = 0
+    if m.lsp as c
+        if c.initialized
+            c.didOpen(m.uri, langIdFor(p), 1, text)
+    m.status = "opened"
+
+def ideInit(): Model
+    var m = Model()
+    m.editor = CodeEditor.forZebra()
+    m.refs = CodeEditor.forFile("references.txt")
+    m.refs!.setReadOnly(true)
+    m.refs!.setText("(references appear here)")
+    m.outline = CodeEditor.forFile("symbols.txt")
+    m.outline!.setReadOnly(true)
+    m.outline!.setText("(symbols appear here)")
+    startLsp(m)
+    var args: List(str) = sys.args()
+    if args.len > 1
+        loadFile(m, args.at(1))
+    return m
+
+# Every ~100 ms: poll the server, push edits after a quiet spell, apply replies.
+def tick(m: Model)
+    if not m.overlay_ready
+        # view() has rendered once by the time the first tick is processed, so
+        # the native control exists and accepts messages (on tui they are no-ops).
+        configureOverlay(m.editor!)
+        m.overlay_ready = true
+    if m.lsp == nil
+        return
+    var c: LspClient = m.lsp!
+    c.poll()
+    if c.initialized and m.uri != "" and m.version == 1 and m.last_sent == m.pending_text and m.diag_seen == 0 and c.diagnostics.get(m.uri) == nil
+        # initialize finished after the file was loaded: open it now (once)
+        c.didOpen(m.uri, langIdFor(m.path), 1, m.last_sent)
+        m.diag_seen = -1
+    if m.uri == ""
+        return
+    var now: str = m.editor!.getText()
+    if now != m.pending_text
+        m.pending_text = now
+        m.quiet = 0
+    else if now != m.last_sent
+        m.quiet = m.quiet + 1
+        if m.quiet >= DIRTY_TICKS
+            m.version = m.version + 1
+            c.didChange(m.uri, m.version, now)
+            m.last_sent = now
+            m.quiet = 0
+    if c.diagnostics.get(m.uri) as ds
+        if ds.len != m.last_diag_count or m.diag_seen != m.diag_applied
+            applyDiagnostics(m, ds)
+            m.last_diag_count = ds.len
+            m.diag_applied = m.diag_seen
+            c.diagnostics.remove(m.uri)      # consumed; the next publish re-arms
+    if m.def_id != 0
+        if c.takeReply(m.def_id) as r
+            m.def_id = 0
+            var locs: List(LspLocation) = c.locations(r)
+            if locs.len == 0
+                m.status = "no definition"
+            else
+                gotoLineCol(m.editor!, locs.at(0).line, locs.at(0).col)
+                m.status = "definition: line " + (locs.at(0).line + 1).toString()
+    if m.refs_id != 0
+        if c.takeReply(m.refs_id) as r
+            m.refs_id = 0
+            var locs: List(LspLocation) = c.locations(r)
+            var sb = StringBuilder()
+            m.ref_lines = List(int)()
+            for l in locs
+                sb.append((l.line + 1).toString() + ":" + (l.col + 1).toString() + "\n")
+                m.ref_lines.add(l.line)
+            m.refs!.setReadOnly(false)
+            m.refs!.setText(sb.build())
+            m.refs!.setReadOnly(true)
+            m.status = locs.len.toString() + " reference(s)"
+    if m.sym_id != 0
+        if c.takeReply(m.sym_id) as r
+            m.sym_id = 0
+            m.sym_lines = List(int)()
+            var outline_text: str = symbolLines(r, m.sym_lines)
+            m.outline!.setReadOnly(false)
+            m.outline!.setText(outline_text)
+            m.outline!.setReadOnly(true)
+            m.status = m.sym_lines.len.toString() + " symbol(s)"
+    if m.rename_id != 0
+        if c.takeReply(m.rename_id) as r
+            m.rename_id = 0
+            var res = r.at("result")
+            if res.isNull() or res.at("changes").isNull()
+                m.status = "rename: server returned no edits"
+            else
+                var line: int = cursorLine(m.editor!)
+                var col: int = cursorCol(m.editor!)
+                var edited: str = applyEdits(m.editor!.getText(), res.getObj("changes"), m.uri)
+                m.editor!.setText(edited)
+                gotoLineCol(m.editor!, line, col)
+                m.status = "renamed"
+
+def update(m: Model, msg: Msg): Model
+    branch msg
+        on Msg.tick
+            tick(m)
+            return m
+        on Msg.open_file
+            return m        # dialog result is delivered through Msg by view (button-gated there)
+        on Msg.save_file
+            if m.path == ""
+                m.status = "nothing to save"
+                return m
+            File.write(m.path, m.editor!.getText())
+            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+            m.status = "saved"
+            return m
+        on Msg.goto_def
+            if m.lsp as c
+                m.def_id = c.definition(m.uri, cursorLine(m.editor!), cursorCol(m.editor!))
+            return m
+        on Msg.find_refs
+            if m.lsp as c
+                m.refs_id = c.references(m.uri, cursorLine(m.editor!), cursorCol(m.editor!))
+            return m
+        on Msg.symbols
+            if m.lsp as c
+                m.sym_id = c.documentSymbol(m.uri)
+            return m
+        on Msg.rename
+            if m.new_name == ""
+                m.status = "rename: type the new name first"
+                return m
+            if m.lsp as c
+                m.rename_id = c.rename(m.uri, cursorLine(m.editor!), cursorCol(m.editor!), m.new_name)
+            return m
+        on Msg.jump_ref
+            var i: int = cursorLine(m.refs!)
+            if i < m.ref_lines.len
+                gotoLineCol(m.editor!, m.ref_lines.at(i), 0)
+            return m
+        on Msg.jump_sym
+            var i: int = cursorLine(m.outline!)
+            if i < m.sym_lines.len
+                gotoLineCol(m.editor!, m.sym_lines.at(i), 0)
+            return m
+
+def view(g: Gui, m: Model)
+    g.send(Msg.tick)
+    using g.vbox("##root", true)
+        using g.hbox("##toolbar", false)
+            if g.button("Open…")
+                var p = g.openFile()
+                if p as path
+                    loadFile(m, path)
+            if g.button("Save")
+                g.send(Msg.save_file)
+            if g.button("Definition")
+                g.send(Msg.goto_def)
+            if g.button("References")
+                g.send(Msg.find_refs)
+            if g.button("Symbols")
+                g.send(Msg.symbols)
+            m.new_name = g.input("new name", m.new_name)
+            if g.button("Rename")
+                g.send(Msg.rename)
+        g.separator()
+        using g.hbox("##body", true)
+            m.editor!.render(g, "##code", 0, 0)
+            using g.vbox("##side", false)
+                g.text("References")
+                m.refs!.render(g, "##refs", 0, 0)
+                if g.button("Jump to reference")
+                    g.send(Msg.jump_ref)
+                g.text("Symbols")
+                m.outline!.render(g, "##syms", 0, 0)
+                if g.button("Jump to symbol")
+                    g.send(Msg.jump_sym)
+        g.separator()
+        var dirty: str = ""
+        if m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+            dirty = " *"
+        var lsp_s: str = "no lsp"
+        if m.lsp_ok
+            lsp_s = "zebra lsp"
+        g.text(m.path + dirty + "   Ln " + (cursorLine(m.editor!) + 1).toString() + ", Col " + (cursorCol(m.editor!) + 1).toString()
+               + "   " + m.editor!.getLanguage() + "   " + lsp_s + "   errors " + m.errors.toString() + "  warnings " + m.warnings.toString()
+               + "   " + m.status)
+
+def main()
+    Gui.run("zebra-ide", 1200, 800, ideInit, update, view)
