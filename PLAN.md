@@ -213,3 +213,13 @@ Docket (from tonight): scope-aware references via the Resolver (v2);
 - Windows-only code written blind this round: `PeekNamedPipe`/`ReadFile` externs in
   `_sys_pipe_read_available`. `test/sys_spawn_piped_test.zbr` is the control to
   run on Windows before trusting it.
+
+
+## Status 2026-09-07 (appended; the sections above are the plan as written)
+
+Landed, all on `main` locally, nothing pushed: P0 hatch + tabs (d23e2de), P1 styler
+(84969e7), first IDE slice (a7eab49), Scintilla event bridge (zig-libui-ng e1b68d3 +
+compiler d5e5456), P2 buffers/document pointers (this commit). Gate: `bash tools/check.sh`.
+Next in agreed order: Build button + gate manifest (headless `gates.zbr` runner first),
+then the DAP client over `zebra debug --listen`. Owed by Sean: Windows runtime witness;
+push zig-libui-ng then bump the pin in zebra-language selfhost/main.zbr luiBuildZon.
