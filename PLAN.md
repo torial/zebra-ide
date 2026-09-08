@@ -267,7 +267,13 @@ Owed by Sean (in this order):
 
 For the next Claude session (any model): read README.md, then `.claude/crew/LOG.md`
 (the refuter's and advocate's findings and what was done about them), then this file.
-Open worklist, none started: `zebra lsp` dependents beyond one directory (recursive
-workspace scan, or a module-path list); clangd / zls clients; plugins (DynLib + gate manifest is the intended route);
+Later still: C and Zig have language servers (eedc882) — one LspClient per language,
+clangd / zls started lazily, cross_lsp_test proves diagnostics + definition + references +
+rename on both (SKIP when absent). Sean made Fable the OWNER of the IDE, Zebra, zig-libui-ng
+and libui-ng for now (2026-09-08), so libui-side limits (8 fixed tabs, no key events) are
+next, not accepted.
+
+Open worklist: `zebra lsp` dependents beyond one directory (recursive workspace scan, or a
+module-path list); key events + growable/relabelable tabs (zig-libui-ng / libui-ng); plugins (DynLib + gate manifest is the intended route);
 Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.
