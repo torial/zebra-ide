@@ -244,9 +244,10 @@ truncating before evaluating its content — the last two found by the NEW
 `src/rename_workspace_test.zbr`, the multi-file rename loop run end to end for the first
 time). Finding from that test: `zebra lsp` renames/references over OPEN documents only, so
 the IDE now shadow-opens the project root's `.zbr` files around a rename
-(`LspClient.openSiblings/closeAll`; `Model.shadow_uris`). check.sh is 10 steps, all green
-in the container. Compiler-side follow-up on the worklist: index `use`d modules from disk
-in `zebra lsp` (then the shadow-open becomes unnecessary and subdirectories work).
+— and then, the same night, `zebra lsp` learned to resolve the `use` graph from disk
+itself (zebra-language 592b8f8, gate `lsp-workspace`), so the IDE's shadow-open was removed
+again (zebra-ide 90355b7); Definition into an unopened module works now too. check.sh is
+10 steps, all green in the container.
 Later the same night: variables pane landed (scopes/variables under the frames; b687d48),
 and the cleanroom seat is now calibrated — its two findings (selfhost-only fixes must be
 stated in the ledger; the var-init `split` site lacked the user-method guard) were both
@@ -266,7 +267,7 @@ Owed by Sean (in this order):
 
 For the next Claude session (any model): read README.md, then `.claude/crew/LOG.md`
 (the refuter's and advocate's findings and what was done about them), then this file.
-Open worklist, none started: `zebra lsp` indexing of `use`d modules from disk (see 09-08
-update); clangd / zls clients; plugins (DynLib + gate manifest is the intended route);
+Open worklist, none started: `zebra lsp` dependents beyond one directory (recursive
+workspace scan, or a module-path list); clangd / zls clients; plugins (DynLib + gate manifest is the intended route);
 Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.
