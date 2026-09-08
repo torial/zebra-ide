@@ -2,7 +2,8 @@
 # headless, end to end. Two files in a scratch workspace: geo.zbr (defines `area`,
 # uses it once) and main.zbr (`use geo exposing area`, calls it). Only main.zbr is
 # "open"; geo.zbr is not. Rename `area` → `surface` at the call site in main:
-#   - the server must return edits for BOTH uris (cross-file rename),
+#   - the server must return edits for BOTH uris (cross-file rename via the `use`
+#     graph, resolved from disk — geo.zbr is never opened),
 #   - the open file is edited in memory (applyEdits), the unopened one on disk
 #     (applyWorkspaceEditToDisk — the exact function ide.zbr calls),
 #   - and the strongest witness: the renamed program still COMPILES AND RUNS and
@@ -76,27 +77,22 @@ def main()
     var call_col: int = colOf(mt, call_line, "area(")
     assert call_line >= 0 and call_col >= 0, "fixture call site not found"
 
-    # Finding (09-08): the server renames over OPEN documents only. With geo.zbr
-    # unopened the reply names one uri. Recorded, not asserted as required -- if
-    # the server learns to index `use`d modules from disk, this line just changes.
-    var rn0 = c.waitReply(c.rename(main_uri, call_line, call_col, "surface"), 8000)
-    assert rn0 != nil, "no rename reply; log: " + c.log().join(" | ")
-    var uris0: List(str) = rn0!.getObj("result").getObj("changes").keys()
-    if not uris0.contains(geo_uri)
-        print("  note: server renamed only the open file; the IDE shadow-opens siblings for exactly this reason")
-
-    # What the IDE does: shadow-open the workspace's other .zbr files, rename, close them.
+    # The server resolves the `use` graph from disk (zebra-language, 09-08): with only
+    # main.zbr open, the rename must still name BOTH files. (The 09-07 server answered
+    # one file here; the IDE briefly shadow-opened siblings to compensate.)
     var open_uris: List(str) = List(str)()
     open_uris.add(main_uri)
-    var shadows: List(str) = c.openSiblings(ws, open_uris)
-    assert shadows.len == 1 and shadows.at(0) == geo_uri, "openSiblings should have opened geo.zbr only, got " + shadows.join(",")
     var rn = c.waitReply(c.rename(main_uri, call_line, call_col, "surface"), 8000)
-    assert rn != nil, "no rename reply (with siblings open); log: " + c.log().join(" | ")
+    assert rn != nil, "no rename reply; log: " + c.log().join(" | ")
     var changes = rn!.getObj("result").getObj("changes")
     var uris: List(str) = changes.keys()
     assert uris.contains(main_uri), "no edits for the open file"
-    assert uris.contains(geo_uri), "no edits for the sibling even when shadow-opened: " + uris.join(",")
-    c.closeAll(shadows)
+    assert uris.contains(geo_uri), "no edits for the UNOPENED module geo.zbr — the server did not resolve the `use` graph: " + uris.join(",")
+    # and Definition into the unopened module lands in it
+    var d = c.waitReply(c.definition(main_uri, call_line, call_col), 8000)
+    assert d != nil, "no definition reply"
+    var dl: List(LspLocation) = c.locations(d!)
+    assert dl.len == 1 and dl.at(0).uri == geo_uri and dl.at(0).line == 0, "definition should land in geo.zbr line 0"
     var edited_main: str = applyEdits(mt, changes, main_uri)
     var n_disk: int = applyWorkspaceEditToDisk(changes, open_uris)
     assert n_disk == 1, "expected 1 file written to disk, got " + n_disk.toString()

@@ -60,7 +60,7 @@ window itself has none and has never been opened.
 | file | what | test |
 |---|---|---|
 | `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | tui compile + libui sema in `check.sh` |
-| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols; `openSiblings` shadow-opens a project's other .zbr files for a rename) | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp` |
+| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols) | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp` |
 | `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames, scopes/variables) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
@@ -91,10 +91,10 @@ window itself has none and has never been opened.
   long pole and lives in the plan, not here.
 - Rename edits open buffers in memory (unsaved) and rewrites unopened files on disk
   in place, and says so in the status line. Close refuses once on unsaved changes.
-  `zebra lsp` resolves references and renames over OPEN documents only, so before a
-  rename the IDE shadow-opens every `.zbr` in the project root (the manifest's directory,
-  not recursive) and closes them after; a module in a subdirectory is not renamed.
-  (rename_workspace_test, 09-08 — the on-disk path had never run before it, and it found
-  two compiler bugs, BUG-352/353, on its first run.)
+  `zebra lsp` (from 09-08) resolves the `use` graph from disk — the modules a file
+  uses, and the same-directory files that use it — so a rename or Definition reaches
+  modules that are not open. Dependents are found one directory deep, not recursively.
+  (rename_workspace_test, 09-08 — the on-disk path had never run before it; its first
+  run found two compiler bugs, BUG-352/353, and the open-documents-only server.)
 - A gate that cannot run here (no lldb-dap) reports **SKIP**, not PASS — in the pane,
   in `gates.zbr`, and in `check.sh`.
