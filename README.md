@@ -46,8 +46,9 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
 6. Put the caret on a line in a small program and press **Breakpoint** (the margin
    click needs the notify bridge, which is absent until the pin bump — same as step
    3), then **Debug** → yellow arrow on that line, frames in the debugger pane; Next
-   moves it; Stop ends it. If `lldb-dap` is missing, the debugger pane shows the
-   relay's own message saying so and how to install it.
+   moves it; Stop ends it. Under the frames, Globals / Registers lists fill in a beat
+   later (Locals says why it is empty). If `lldb-dap` is missing, the debugger pane
+   shows the relay's own message saying so and how to install it.
 
 If a step fails, the thing to send back is the status line text plus, for 2/4/6, the
 child's stderr: run `zebra lsp` / `zebra debug file.zbr` by hand and paste what it
@@ -60,7 +61,7 @@ window itself has none and has never been opened.
 |---|---|---|
 | `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | tui compile + libui sema in `check.sh` |
 | `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols; `openSiblings` shadow-opens a project's other .zbr files for a rename) | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp` |
-| `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames) | `dap_client_test.zbr` vs real relay + lldb-dap |
+| `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames, scopes/variables) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
@@ -73,9 +74,10 @@ window itself has none and has never been opened.
 - Eight tabs (a fixed row: libui creates every widget on frame 0 and `uiTab` cannot
   relabel pages). Close one to open a ninth.
 - No keyboard shortcuts: libui exposes no key events for Scintilla. Buttons for now.
-- No variables pane yet. The DAP client can ask for scopes/variables, but the IDE
-  does not show them; lldb has no Zig language plugin, so Locals would come back
-  empty anyway (Globals and Registers do work at the protocol level).
+- Variables: when the program stops, the debugger pane shows the top frame's scopes
+  under the frames — Globals and Registers with values (first 40 each), and Locals,
+  which is EMPTY for Zig programs because lldb has no Zig language plugin; the pane
+  says so rather than showing a blank. (09-08; dap_client_test checks the scopes.)
 - The tui backend only proves the program compiles; its editor is a text stub.
 - Squiggles on `selfhost/CodeGen.zbr` lag by the compiler's own check time (~6 s).
 - C and Zig: syntax colouring only. One language server (`zebra lsp`) is wired; C and

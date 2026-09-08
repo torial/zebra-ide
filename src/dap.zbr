@@ -30,6 +30,10 @@ struct DapVar
     var value: str
     var kind: str
 
+struct DapScope
+    var name: str          # "Locals" | "Globals" | "Registers" (lldb-dap's names)
+    var ref: int           # variablesReference to pass to variables()
+
 def jsonEsc(s: str): str
     return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
@@ -241,6 +245,17 @@ class DapClient
                 name = name[8..name.len]
             .frames.add(DapFrame(id: f.getInt("id"), name: name, path: path, line: f.getInt("line"), col: col))
         return .frames.len
+
+    # Decode a scopes reply. lldb-dap answers Locals / Globals / Registers; Locals is
+    # EMPTY for Zig programs (no lldb language plugin), Globals and Registers are real.
+    def readScopes(reply: JsonValue): List(DapScope)
+        var out: List(DapScope) = List(DapScope)()
+        var res = reply.at("body")
+        if res.isNull()
+            return out
+        for sc in res.getList("scopes")
+            out.add(DapScope(name: sc.getStr("name"), ref: sc.getInt("variablesReference")))
+        return out
 
     def readVariables(reply: JsonValue): List(DapVar)
         var out: List(DapVar) = List(DapVar)()

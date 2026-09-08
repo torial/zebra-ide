@@ -617,3 +617,148 @@ findFrom / replaceAll / symbolLines / showFrames have no instrument; the
 multi-file rename loop has never executed. That is the next headless test to
 write, and the chair says so here rather than claiming it done.
 — chair (fable 5.1), 2026-09-07
+
+## Cleanroom review — compiler 4784e06 + ide ca9a074 (BUG-341/342/345/346 + rename_workspace_test)
+
+**Independent reading of the request, before opening either diff.** The ticket asks
+for four named compiler defects (341/342/345/346), each proven broken by a test
+that failed before the fix landed, then for the IDE code that worked around those
+four defects to be deleted now that the compiler no longer needs working around,
+and finally for a headless test that runs the IDE's actual multi-file rename path
+— shadow-open, in-memory edit, on-disk edit, close — against a real `zebra lsp`
+and a real two-file workspace. The sharpest thing an outside reader checks first is
+whether "fixed" means fixed everywhere the logic is duplicated (this project keeps
+a runtime preamble in two copies and a GUI backend in two sections, and the
+founding incident is exactly a fix that landed in one copy and not its sibling),
+and whether the new rename test can actually go red.
+
+**Verdict up front: the change is sound for what it claims — the IDE side.**
+`tools/check.sh` (10/10) and the six new compiler fixtures all pass; three IDE
+workarounds (345, 346, and the shadow-open siblings behavior itself) are real and
+load-bearing. But "fixed" oversells the compiler side: two findings below survived
+my attempts to kill them.
+
+### Finding 1 (medium, compiler repo) — the four fixes (plus 350/353) exist only in the selfhost; the bootstrap compiler still leaks the exact Zig errors the bugs were filed to eliminate
+
+`zebra-language` carries two independent implementations of the type checker /
+codegen: `selfhost/*.zbr` (self-hosted, what `zig-out/bin/zebra` is built from) and
+`src/*.zig` (`zebra-bootstrap`, hand-written Zig, used to regenerate the selfhost).
+The diff edits only `selfhost/TypeChecker.zbr` and `selfhost/CodeGen.zbr`. I ran
+the five new fixtures against `zig-out/bin/zebra-bootstrap` directly:
+
+```
+$ zig-out/bin/zebra-bootstrap test/bug341_sb_unknown_method_fail.zbr
+test/bug341_sb_unknown_method_fail.zbr:4: error: no field or member function named 'add' in 'array_list.Aligned(u8,null)'
+```
+
+BUG-341, 342, 346, 350 and 353 all still leak raw Zig through `zebra-bootstrap`
+(342: "cast discards const qualifier"; 346/350/353: Zig compile errors deep in
+generated `.zig`). Only 352 happens to already work there. I tried to kill this:
+`tools/selfhost_smoke.sh` sets `ZEBRA=zig-out/bin/zebra`, never bootstrap, so
+nothing in the gate exercises this path, and I confirmed the IDE never invokes
+`zebra-bootstrap` (`grep -rn bootstrap src/*.zbr *.json` in zebra-ide: nothing but
+a comment) — so the ticket's actual deliverable, the IDE, is unaffected and I am
+not asking for anything to be reverted. What survives is a documentation/tracking
+gap: BUGS.md marks all five "FIXED" with no bootstrap caveat, where the project's
+own convention is to say so explicitly (BUG-311: "bootstrap is unaffected"; BUG-345's
+own entry here says "the bootstrap always had it" for Timer — checked, true, both
+`stdlib_preamble.zig` and `zebra_rt.zig` already defined `TimerHandle` identically
+before this diff). Someone bootstrapping from a source tree with the regenerated
+`selfhost/*.zig` missing (BUGS.md's own documented recovery path) hits these bugs
+again, unmarked as still-open there.
+
+### Finding 2 (low, pre-existing, exposed by this diff) — `isNamedRecvCall` protects the new return-position split-collect, not its sibling annotated-var site
+
+BUG-350's fix (`genSplitCollect` shared by the annotated-var site (BUG-092,
+pre-existing) and the new return-position site) adds `isNamedRecvCall` specifically
+to keep a user class's own `.split` method from being mistaken for the string
+builtin and wrapped in an iterator-collect loop — but only guards the *return*
+site. The comment on the shared helper says "One labeled block expression ... so
+the two sites cannot drift," which is not what the code does: the annotated-var
+site has no such guard and still breaks on exactly this pattern. Reproduced against
+the built compiler, not the diff's own fixtures:
+
+```
+class Sep
+    def split(sep: str): List(str)
+        return .parts
+def main()
+    var s = Sep()
+    var xs: List(str) = s.split(",")   # → "no field or member function named 'next'"
+```
+
+vs. the same class through a `def wrap(s: Sep): List(str) / return s.split(",")` —
+return position — which compiles and runs correctly with this diff. This is a
+pre-existing defect (BUG-092), not introduced here, and it is not filed as its own
+BUGS.md entry, so there is nothing to mark "still open" — but the diff's comment
+claims a shared protection that the diff itself only half-delivers, and the
+asymmetry is now demonstrably live in code the diff touched.
+
+### Everything else checked and killed
+- `isContainerTypeRef`'s new `StringBuilder` arm: single non-duplicated branch,
+  same convention as `List`/`HashMap`/`Set`, verified via bug342 fixture (param +
+  method + forwarding-through-class all pass).
+- `active_loop_vars` (BUG-352): only one call site each for `genForIn`/`genForNum`
+  (the statement dispatcher), so the push/pop wrapper cannot be bypassed by a
+  nested loop; verified no duplicate/direct calls to `genForInBody`/`genForNumBody`
+  elsewhere.
+- Timer wiring: `Timer.start()` codegen already existed pre-diff (`CodeGen.zbr:14705`);
+  this diff only adds the missing type-position half (field/param/annotation).
+  Runtime struct (`TimerHandle`) was already identical in both preamble copies.
+- IDE side: `applyWorkspaceEdit` correctly separates open buffers (in `m.bufs`) from
+  shadow-opened siblings (server-only, `m.bufs.findUri` returns -1) so
+  `applyWorkspaceEditToDisk` writes exactly the right set; confirmed by
+  `rename_workspace_test` (`n_disk == 1`, open file untouched on disk). `closeAll`
+  on shadow_uris runs on both the "no edits" and the "applied" branches of the
+  rename reply, not just the happy path. `dirOf` is exported from `gates.zbr` and
+  used correctly as fallback root.
+- The `symbolLines` "BUG-342 workaround" (build locally, return `sb.build()`)
+  was *not* actually removed — only re-commented as a deliberate design choice
+  ("cleaner contract") — contradicting the compiler commit's claim ("The ide.zbr
+  workaround is removed") for that one item. Not a bug (nothing leaks, nothing
+  fails); a claim-accuracy nit, not raised as a ranked finding.
+- Kill-attempted but not run to completion: full red/green rebuild of the selfhost
+  compiler with each fix reverted (BUG-341's diagnostic text and the six positive
+  fixtures give strong indirect evidence instead; a genuine self-hosted rebuild
+  from a hand-edited selfhost source was judged disproportionate for this pass).
+
+### Crew log, read last
+Concurs with the advocate/chair thread's finding 7 close-out: `rename_workspace_test`
+is exactly the instrument that was missing, and it was real enough to catch two
+compiler bugs (352, 353) on its first run — the diff's own account of that is
+accurate and I found nothing to add or dissent from there. No prior cleanroom entry
+existed to concur or dissent with.
+
+— cleanroom (sonnet), 2026-09-08
+
+**Cleanroom's process notes**
+
+*What worked.* Grepping for the pattern before reading the author's rationale —
+"where else does `isContainerTypeRef` / `active_loop_vars` / `Timer` get checked"
+— found the real gaps in minutes; the bootstrap-vs-selfhost split in particular
+is invisible if you read the diff front-to-back, since the diff never mentions
+`src/*.zig` at all and BUGS.md's own text about BUG-345 ("the bootstrap always had
+it") reads as reassurance that primes you not to check the other four. Actually
+running `zebra-bootstrap` against the new fixtures — a one-line command already
+sitting in the environment description — was worth more than any amount of
+reading the diff twice.
+
+*What was frustrating.* The instruction to write my own reading down before
+touching the diff sits oddly with "grep for the pattern the diff changes" — you
+cannot know which pattern to grep for until you've read the diff. I resolved it
+by writing the two-sentence reading from the ticket alone, then reading the diffs,
+then doing the grep pass — which worked, but the charter doesn't quite say that's
+the intended order.
+
+*Keep.* Being handed only the request and the diffs, with the crew log withheld
+until the end, meant I reproduced the bootstrap gap and the split-collect
+asymmetry from first principles rather than pattern-matching on what the advocate
+or chair already flagged — worth keeping even though it costs a full local
+compiler build's worth of exploration time.
+
+*Change.* A cheap, real self-hosted "revert one fix and confirm red" rebuild is
+expensive enough here (selfhost bootstrap round-trip) that I substituted indirect
+evidence (diagnostic text matching, positive fixtures) for three of the six new
+compiler tests. A pre-built "known-bad" selfhost snapshot per bug, if the project
+wanted every cleanroom pass to actually flip each instrument, would make that
+check cheap instead of prohibitive.

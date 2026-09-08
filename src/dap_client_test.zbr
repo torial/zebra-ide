@@ -5,7 +5,7 @@
 # hits the loop's breakpoint again, disconnect ends the session with no child left.
 # Skips (prints "skipped") when lldb-dap is not installed — that is an environment
 # fact, not a failure of the client.
-use dap exposing DapClient, DapFrame, DapVar
+use dap exposing DapClient, DapFrame, DapVar, DapScope
 
 def main()
     var zopt = sys.getenv("ZEBRA_COMPILER")
@@ -42,6 +42,28 @@ def main()
     var top: DapFrame = c.frames.at(0)
     assert top.path.endsWith("hello_dbg.zbr"), "top frame should be the .zbr, got " + top.path
     assert top.line == 2, "breakpoint line should be 2, got " + top.line.toString()
+    # scopes + variables of the top frame (variables pane, 09-08). Locals is empty for
+    # Zig programs (no lldb plugin) — recorded, not required; Registers must be real.
+    var sc = c.waitReply(c.scopes(top.id), 10000)
+    assert sc != nil, "no scopes reply"
+    var scopes: List(DapScope) = c.readScopes(sc!)
+    assert scopes.len >= 2, "expected Locals/Globals/Registers scopes, got " + scopes.len.toString()
+    var saw_regs: bool = false
+    for s in scopes
+        var vr = c.waitReply(c.variables(s.ref), 10000)
+        assert vr != nil, "no variables reply for scope " + s.name
+        var vars: List(DapVar) = c.readVariables(vr!)
+        if s.name == "Registers"
+            saw_regs = true
+            assert vars.len > 0, "Registers scope came back empty"
+            var has_pc: bool = false
+            for v in vars
+                if v.name == "rip" or v.name == "pc" or v.name == "General Purpose Registers"
+                    has_pc = true
+            assert has_pc, "no pc-like entry among " + vars.len.toString() + " registers"
+        if s.name == "Locals" and vars.len == 0
+            print("  note: Locals empty (no lldb Zig plugin) — expected, not asserted")
+    assert saw_regs, "no Registers scope"
     c.next()
     assert c.waitState("stopped", 10000), "did not stop after next"
     var st2 = c.waitReply(c.stackTrace(), 10000)

@@ -37,7 +37,7 @@
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
 use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
 use gates exposing Manifest, GateSpec, GateRun, Diag, loadManifest, joinPath, dirOf
-use dap exposing DapClient, DapFrame, DapVar
+use dap exposing DapClient, DapFrame, DapVar, DapScope
 use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener
 use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE
 
@@ -97,6 +97,9 @@ class Model
     var dbg: DapClient? = nil
     var dbg_pane: CodeEditor? = nil
     var dbg_frames_id: int = 0
+    var dbg_scopes_id: int = 0                 # scopes request for the top frame
+    var dbg_var_req: HashMap(int, str)         # variables request id → scope name
+    var dbg_vars_text: str = ""                # rendered scopes, appended under the frames
     var dbg_launched: bool = false
     var dbg_src: str = ""
     var dbg_last_state: str = ""
@@ -112,6 +115,7 @@ class Model
         .pane_diag = List(Diag)()
         .pane_diag_idx = List(int)()
         .shadow_uris = List(str)()
+        .dbg_var_req = HashMap(int, str)()
 
 union Msg
     tick
@@ -657,6 +661,8 @@ def showFrames(m: Model, c: DapClient)
     sb.append("stopped: " + c.stop_reason + "\n")
     for f in c.frames
         sb.append(baseName(f.path) + ":" + f.line.toString() + "  " + f.name + "\n")
+    if m.dbg_vars_text != ""
+        sb.append(m.dbg_vars_text)
     if c.output.len > 0
         sb.append("── output ──\n" + c.output)
     dbgPane(m, sb.build())
@@ -729,8 +735,47 @@ def pollDebug(m: Model)
             if c.takeReply(m.dbg_frames_id) as r
                 m.dbg_frames_id = 0
                 c.readFrames(r)
+                m.dbg_vars_text = ""
+                m.dbg_var_req = HashMap(int, str)()
+                if c.frames.len > 0
+                    m.dbg_scopes_id = c.scopes(c.frames.at(0).id)
                 showFrames(m, c)
                 m.status = "debug: stopped (" + c.stop_reason + ")"
+        # variables pane: scopes of the top frame, then each scope's variables, rendered
+        # under the frames as they arrive (Locals is empty for Zig programs and says so)
+        if m.dbg_scopes_id != 0
+            if c.takeReply(m.dbg_scopes_id) as sr
+                m.dbg_scopes_id = 0
+                for sc in c.readScopes(sr)
+                    m.dbg_var_req.put(c.variables(sc.ref), sc.name)
+        if m.dbg_var_req.count() > 0
+            var done_ids: List(int) = List(int)()
+            for vid in m.dbg_var_req.keys()
+                if c.takeReply(vid) as vr
+                    var vars: List(DapVar) = c.readVariables(vr)
+                    var sname: str = m.dbg_var_req.fetch(vid)
+                    var vsb = StringBuilder()
+                    vsb.append("── " + sname + " (" + vars.len.toString() + ")")
+                    if vars.len == 0 and sname == "Locals"
+                        vsb.append(" — empty: lldb has no Zig plugin; Globals and Registers are real")
+                    vsb.append("\n")
+                    var shown: int = 0
+                    for v in vars
+                        if shown >= 40
+                            vsb.append("  … " + (vars.len - shown).toString() + " more\n")
+                            break
+                        vsb.append("  " + v.name + " = " + v.value)
+                        if v.kind != ""
+                            vsb.append("  : " + v.kind)
+                        vsb.append("\n")
+                        shown = shown + 1
+                    m.dbg_vars_text = m.dbg_vars_text + vsb.build()
+                    done_ids.add(vid)
+            if done_ids.len > 0
+                for did in done_ids
+                    m.dbg_var_req.remove(did)
+                if c.state == "stopped"
+                    showFrames(m, c)
         if c.output.len != m.dbg_output_len and c.state == "running"
             m.dbg_output_len = c.output.len
             dbgPane(m, "running…\n── output ──\n" + c.output)
