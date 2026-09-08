@@ -1,5 +1,5 @@
 # buffers_test — BufferSet transitions, headless.  zebra src/buffers_test.zbr
-use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
+use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName
 
 def main()
     assert uriOf("C:\\Projects\\a b\\x.zbr") == "file:///C:/Projects/a b/x.zbr"
@@ -30,13 +30,13 @@ def main()
     assert bs.close(0)
     assert bs.current == 1 and bs.cur()!.path == "/p/d.zig"
     assert not bs.close(9)
-    # tab row is fixed
+    # no tab limit (09-08): twenty more open fine, each once
     var k: int = 0
-    while bs.count() < MAX_TABS
+    while k < 20
         bs.open("/p/f" + k.toString() + ".zbr", "")
         k = k + 1
-    assert bs.open("/p/overflow.zbr", "") == -1
-    assert bs.count() == MAX_TABS
+    assert bs.count() == 22, "expected 22 buffers, got " + bs.count().toString()
+    assert bs.open("/p/f3.zbr", "") == 5 and bs.count() == 22
     # closing everything
     while bs.count() > 0
         bs.close(0)

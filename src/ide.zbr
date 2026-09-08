@@ -26,7 +26,8 @@
 #   * many documents in ONE Scintilla control via document pointers (plan P2):
 #     each Buffer owns an SCI_CREATEDOCUMENT; switching is SCI_SETDOCPOINTER,
 #     which keeps undo history per document; caret/scroll are saved by hand.
-#     Tabs are a fixed row of MAX_TABS g.buttonId buttons (uiTab cannot relabel).
+#     Tabs are one g.buttonId per open file, keyed by path (a closed tab's button is
+#     hidden by the GUI section because the view stops emitting it — 09-08).
 #   * no keyboard shortcuts: libui exposes no key events for Scintilla, and
 #     Scintilla's own SCI_ASSIGNCMDKEY only maps keys to Scintilla commands;
 #   * events arrive through the notify bridge (editor.takeModified /
@@ -35,10 +36,11 @@
 #     1-in-10-ticks fallback so the tui backend (no events) still works.
 
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
-use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName, MAX_TABS
+use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName
 use gates exposing Manifest, GateSpec, GateRun, Diag, loadManifest, joinPath
 use dap exposing DapClient, DapFrame, DapVar, DapScope
 use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener
+use keys exposing shortcutAction, shortcutList, Shortcut
 use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE
 
 # ── Constants of this program ──────────────────────────────────────────────
@@ -348,9 +350,6 @@ def openFile(m: Model, p: str): bool
     if not File.exists(p)
         m.status = "not found: " + p
         return false
-    if m.bufs.count() >= MAX_TABS
-        m.status = "tab row is full (" + MAX_TABS.toString() + ") — close one first"
-        return false
     var text: str = File.read(p)
     saveView(m)
     var i: int = m.bufs.open(p, text)
@@ -406,9 +405,48 @@ def closeCurrent(m: Model)
         m.editor!.sci(SCI_RELEASEDOCUMENT, 0, doc)
     m.status = "closed " + baseName(b.path)
 
+# Keyboard shortcuts: the table lives in keys.zbr (headless-tested); this claims the
+# chords and maps an action name to the Msg. Unclaimed chords stay Scintilla's.
+def registerShortcuts(ed: CodeEditor)
+    for sc in shortcutList()
+        ed.hotkey(sc.vk, sc.mods)
+
+def shortcutMsg(k: int, debugging: bool): Msg?
+    var a: str = shortcutAction(k, debugging)
+    if a == "save"
+        return Msg.save_file
+    if a == "close"
+        return Msg.close_tab
+    if a == "find"
+        return Msg.find_next
+    if a == "build"
+        return Msg.build
+    if a == "gates"
+        return Msg.run_gates
+    if a == "debug"
+        return Msg.debug_start
+    if a == "continue"
+        return Msg.debug_continue
+    if a == "stop"
+        return Msg.debug_stop
+    if a == "breakpoint"
+        return Msg.toggle_breakpoint
+    if a == "next"
+        return Msg.debug_next
+    if a == "step_in"
+        return Msg.debug_step_in
+    if a == "step_out"
+        return Msg.debug_step_out
+    if a == "definition"
+        return Msg.goto_def
+    if a == "references"
+        return Msg.find_refs
+    return nil
+
 def ideInit(): Model
     var m = Model()
     m.editor = CodeEditor.forZebra()
+    registerShortcuts(m.editor!)
     m.refs = CodeEditor.forFile("references.txt")
     m.refs!.setReadOnly(true)
     m.refs!.setText("(references appear here)")
@@ -971,6 +1009,15 @@ def update(m: Model, msg: Msg): Model
     branch msg
         on Msg.tick
             tick(m)
+            # claimed chords, in order, each as the Msg it means
+            var k: int = m.editor!.takeKey()
+            var kn: int = 0
+            while k != 0 and kn < 16
+                if shortcutMsg(k, m.dbg != nil) as km
+                    var back: Model = update(m, km)     # Model is a class: `back` IS m
+                    assert back == m
+                k = m.editor!.takeKey()
+                kn = kn + 1
             return m
         on Msg.open_file
             return m        # dialog result is delivered through Msg by view (button-gated there)
@@ -1220,15 +1267,16 @@ def view(g: Gui, m: Model)
                 g.send(Msg.debug_stop)
             if g.button("Jump to frame")
                 g.send(Msg.jump_frame)
-        # fixed tab row: MAX_TABS buttons keyed by slot, relabelled as files open
+        # tab row: one button per open file, keyed by PATH (not slot) so closing a
+        # middle tab hides its own button and the rest keep their identity
         using g.hbox("##tabs", false)
             var dirty_now: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
             var t: int = 0
-            while t < MAX_TABS
+            while t < m.bufs.count()
                 var lbl: str = m.bufs.label(t, dirty_now and t == m.bufs.current)
-                if lbl == ""
-                    lbl = "·"
-                if g.buttonId("##tab" + t.toString(), lbl)
+                if t == m.bufs.current
+                    lbl = "[" + lbl + "]"
+                if g.buttonId("##tab:" + m.bufs.items.at(t).path, lbl)
                     g.send(Msg.select_tab(t))
                 t = t + 1
         g.separator()

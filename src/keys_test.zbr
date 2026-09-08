@@ -1,0 +1,30 @@
+# keys_test — the shortcut table is well-formed, headless.
+use keys exposing Shortcut, shortcutList, shortcutAction, chord, shortcutHelp, KEY_CTRL, KEY_SHIFT, VK_F5
+
+def main()
+    var list: List(Shortcut) = shortcutList()
+    assert list.len >= 10, "table too small"
+    # no chord claimed twice
+    var i: int = 0
+    while i < list.len
+        var j: int = i + 1
+        while j < list.len
+            assert chord(list.at(i).vk, list.at(i).mods) != chord(list.at(j).vk, list.at(j).mods), "duplicate chord: " + list.at(i).label + " / " + list.at(j).label
+            j = j + 1
+        i = i + 1
+    # every claimed chord has an action, and the action round-trips
+    for sc in list
+        var a: str = shortcutAction(chord(sc.vk, sc.mods), false)
+        assert a != "", "no action for " + sc.label
+        if sc.action != "debug"
+            assert a == sc.action, sc.label + " → " + a
+    # F5 depends on the debugger state
+    assert shortcutAction(chord(VK_F5, 0), false) == "debug"
+    assert shortcutAction(chord(VK_F5, 0), true) == "continue"
+    # Scintilla's own keys are NOT claimed: Ctrl+C, Ctrl+V, Ctrl+Z, plain letters
+    assert shortcutAction(chord(0x43, KEY_CTRL), false) == "", "Ctrl+C must stay Scintilla's"
+    assert shortcutAction(chord(0x56, KEY_CTRL), false) == "", "Ctrl+V must stay Scintilla's"
+    assert shortcutAction(chord(0x5A, KEY_CTRL), false) == "", "Ctrl+Z must stay Scintilla's"
+    assert shortcutAction(chord(0x53, 0), false) == "", "plain S must stay Scintilla's"
+    assert shortcutHelp().contains("Ctrl+S  save")
+    print("keys_test: ok")

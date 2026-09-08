@@ -1,0 +1,63 @@
+# keys.zbr — the IDE's keyboard shortcuts, as data. Pure, so keys_test can check the
+# table without a window: no chord claimed twice, every claimed chord has an action,
+# an unclaimed chord has none. ide.zbr maps the action name to its Msg.
+#
+# Mechanism (09-08): editor.hotkey(vk, mods) claims a chord; zig-libui-ng's shim sees
+# every key-down before Scintilla (uiScintillaOnKey) and CONSUMES claimed chords, so
+# Ctrl+S never inserts a control character and F5 never reaches the control. Chords
+# not claimed — Ctrl+C/V/X/Z/Y/A, arrows, Home/End — stay Scintilla's own.
+
+const KEY_CTRL: int = 1
+const KEY_SHIFT: int = 2
+const KEY_ALT: int = 4
+const VK_F5: int = 0x74
+const VK_F9: int = 0x78
+const VK_F10: int = 0x79
+const VK_F11: int = 0x7A
+const VK_F12: int = 0x7B
+
+struct Shortcut
+    var vk: int
+    var mods: int
+    var action: str
+    var label: str
+
+def chord(vk: int, mods: int): int
+    return mods * 65536 + vk
+
+def shortcutList(): List(Shortcut)
+    var out: List(Shortcut) = List(Shortcut)()
+    out.add(Shortcut(vk: 0x53, mods: KEY_CTRL, action: "save", label: "Ctrl+S"))
+    out.add(Shortcut(vk: 0x57, mods: KEY_CTRL, action: "close", label: "Ctrl+W"))
+    out.add(Shortcut(vk: 0x46, mods: KEY_CTRL, action: "find", label: "Ctrl+F"))
+    out.add(Shortcut(vk: 0x42, mods: KEY_CTRL, action: "build", label: "Ctrl+B"))
+    out.add(Shortcut(vk: 0x42, mods: KEY_CTRL + KEY_SHIFT, action: "gates", label: "Ctrl+Shift+B"))
+    out.add(Shortcut(vk: VK_F5, mods: 0, action: "debug", label: "F5"))            # continue while debugging
+    out.add(Shortcut(vk: VK_F5, mods: KEY_SHIFT, action: "stop", label: "Shift+F5"))
+    out.add(Shortcut(vk: VK_F9, mods: 0, action: "breakpoint", label: "F9"))
+    out.add(Shortcut(vk: VK_F10, mods: 0, action: "next", label: "F10"))
+    out.add(Shortcut(vk: VK_F11, mods: 0, action: "step_in", label: "F11"))
+    out.add(Shortcut(vk: VK_F11, mods: KEY_SHIFT, action: "step_out", label: "Shift+F11"))
+    out.add(Shortcut(vk: VK_F12, mods: 0, action: "definition", label: "F12"))
+    out.add(Shortcut(vk: VK_F12, mods: KEY_SHIFT, action: "references", label: "Shift+F12"))
+    return out
+
+# (registerShortcuts lives in ide.zbr: a CodeEditor cannot cross a module boundary —
+# each module's emitted Zig carries its own GUI section type; BUG-355.)
+
+# The action for a chord as takeKey() reports it ((mods << 16) | vk), or "".
+# F5 is "debug" when no session runs and "continue" when one does.
+def shortcutAction(k: int, debugging: bool): str
+    for sc in shortcutList()
+        if k == chord(sc.vk, sc.mods)
+            if sc.action == "debug" and debugging
+                return "continue"
+            return sc.action
+    return ""
+
+# For the README / a help pane.
+def shortcutHelp(): str
+    var sb = StringBuilder()
+    for sc in shortcutList()
+        sb.append(sc.label + "  " + sc.action + "\n")
+    return sb.build()

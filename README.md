@@ -71,14 +71,22 @@ window itself has none and has never been opened.
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
+| `src/keys.zbr` | the shortcut table (chord → action), pure | `keys_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 11 steps | — |
+| `tools/check.sh` | the gate: all of the above, 12 steps | — |
 
 ## Known limits (stated, not hidden)
 
-- Eight tabs (a fixed row: libui creates every widget on frame 0 and `uiTab` cannot
-  relabel pages). Close one to open a ninth.
-- No keyboard shortcuts: libui exposes no key events for Scintilla. Buttons for now.
+- Tabs are a button row, one per open file, the current one in `[brackets]`; no
+  limit (09-08: the compiler's GUI section now hides a widget the view stops
+  emitting, so closed tabs disappear). A real `uiTab` strip is still not used —
+  libui-ng cannot relabel a page and the row is the honest version of that.
+- Keyboard shortcuts (09-08, needs the zig-libui-ng key shim → the pin bump): Ctrl+S
+  save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, F5 debug /
+  continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11 step out,
+  F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks
+  it claims nothing Scintilla owns — Ctrl+C/V/X/Z/Y/A stay the editor's). Until the
+  pin moves, the chords are inert and the buttons do everything.
 - Variables: when the program stops, the debugger pane shows the top frame's scopes
   under the frames — Globals and Registers with values (first 40 each), and Locals,
   which is EMPTY for Zig programs because lldb has no Zig language plugin; the pane

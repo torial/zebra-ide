@@ -3,6 +3,7 @@
 #   1. sci_test          constants module loads (headless)
 #   2. buffers_test      document bookkeeping (headless)
 #   3. textops_test      applyEdits / symbolLines / auto-indent, pure (headless)
+#   3a. keys_test        the shortcut table: no duplicate chords, Scintilla's own keys unclaimed
 #   3b. gates_test       manifest + runner vs the real compiler (headless)
 #   4. dap_client_test   DAP client vs real `zebra debug` + lldb-dap — SKIP (not PASS)
 #                        when lldb-dap is absent
@@ -26,6 +27,7 @@ step() { echo "── $1"; }
 step "sci_test";        (cd src && "$ZEBRA" sci_test.zbr 2>&1 | tail -1 | grep -q "sci_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "buffers_test";    (cd src && "$ZEBRA" buffers_test.zbr 2>&1 | tail -1 | grep -q "buffers_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | grep -q "textops_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "keys_test";       (cd src && "$ZEBRA" keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "dap_client_test"
 dap_out=$(cd src && "$ZEBRA" dap_client_test.zbr 2>&1 | tail -1)
