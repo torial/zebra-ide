@@ -1,0 +1,118 @@
+# rename_workspace_test — the multi-file rename loop against a real `zebra lsp`,
+# headless, end to end. Two files in a scratch workspace: geo.zbr (defines `area`,
+# uses it once) and main.zbr (`use geo exposing area`, calls it). Only main.zbr is
+# "open"; geo.zbr is not. Rename `area` → `surface` at the call site in main:
+#   - the server must return edits for BOTH uris (cross-file rename),
+#   - the open file is edited in memory (applyEdits), the unopened one on disk
+#     (applyWorkspaceEditToDisk — the exact function ide.zbr calls),
+#   - and the strongest witness: the renamed program still COMPILES AND RUNS and
+#     prints what it printed before. A rename that leaves one reference behind
+#     fails to compile; a rename that clobbers offsets prints garbage.
+#   zebra src/rename_workspace_test.zbr
+use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
+use textops exposing applyEdits, applyWorkspaceEditToDisk
+
+def findLine(text: str, needle: str): int
+    var i: int = 0
+    for l in text.split("\n")
+        if l.contains(needle)
+            return i
+        i = i + 1
+    return -1
+
+def colOf(text: str, line: int, needle: str): int
+    var i: int = 0
+    for l in text.split("\n")
+        if i == line
+            return l.indexOf(needle)
+        i = i + 1
+    return -1
+
+def runProgram(zebra: str, dir: str, file: str): str
+    var argv: List(str) = List(str)()
+    argv.add(zebra)
+    argv.add(file)
+    var p = sys.spawnPipedIn(argv, dir)
+    var out: str = ""
+    var waited: int = 0
+    while p.isRunning() and waited < 120000
+        out = out + p.readAvailable()
+        sys.sleep(50)
+        waited = waited + 50
+    out = out + p.readAvailable()
+    return out
+
+def main()
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    assert zopt != nil, "ZEBRA_COMPILER must be set (the compiler sets it for programs it runs)"
+    var zebra: str = zopt!
+
+    # scratch workspace
+    var ws: str = "/tmp/zebra_ide_rename_ws"
+    if sys.getenv("TEMP") as tmp
+        ws = tmp.replace("\\", "/") + "/zebra_ide_rename_ws"
+    if not File.exists(ws)
+        Dir.create(ws)
+    var gp: str = ws + "/geo.zbr"
+    var mp: str = ws + "/main.zbr"
+    File.write(gp, "def area(s: int): int\n    return s * s\n\ndef perimeter(s: int): int\n    return 4 * area(s) / s\n")
+    File.write(mp, "use geo exposing area\n\ndef main()\n    var total: int = 0\n    total = total + area(3)\n    print(\"total=\" + total.toString())\n")
+    var before: str = runProgram(zebra, ws, "main.zbr")
+    assert before.contains("total=9"), "fixture does not run before the rename: " + before
+
+    var argv: List(str) = List()
+    argv.add(zebra)
+    argv.add("lsp")
+    var c = LspClient()
+    assert c.start("zebra", argv), "could not start zebra lsp"
+    assert c.waitReply(c.initialize("file://" + ws), 5000) != nil, "no initialize reply"
+
+    # only main.zbr is open
+    var main_uri: str = "file://" + mp
+    var geo_uri: str = "file://" + gp
+    var mt: str = File.read(mp)
+    assert c.didOpen(main_uri, "zebra", 1, mt), "didOpen failed"
+    var call_line: int = findLine(mt, "total + area(3)")
+    var call_col: int = colOf(mt, call_line, "area(")
+    assert call_line >= 0 and call_col >= 0, "fixture call site not found"
+
+    # Finding (09-08): the server renames over OPEN documents only. With geo.zbr
+    # unopened the reply names one uri. Recorded, not asserted as required -- if
+    # the server learns to index `use`d modules from disk, this line just changes.
+    var rn0 = c.waitReply(c.rename(main_uri, call_line, call_col, "surface"), 8000)
+    assert rn0 != nil, "no rename reply; log: " + c.log().join(" | ")
+    var uris0: List(str) = rn0!.getObj("result").getObj("changes").keys()
+    if not uris0.contains(geo_uri)
+        print("  note: server renamed only the open file; the IDE shadow-opens siblings for exactly this reason")
+
+    # What the IDE does: shadow-open the workspace's other .zbr files, rename, close them.
+    var open_uris: List(str) = List(str)()
+    open_uris.add(main_uri)
+    var shadows: List(str) = c.openSiblings(ws, open_uris)
+    assert shadows.len == 1 and shadows.at(0) == geo_uri, "openSiblings should have opened geo.zbr only, got " + shadows.join(",")
+    var rn = c.waitReply(c.rename(main_uri, call_line, call_col, "surface"), 8000)
+    assert rn != nil, "no rename reply (with siblings open); log: " + c.log().join(" | ")
+    var changes = rn!.getObj("result").getObj("changes")
+    var uris: List(str) = changes.keys()
+    assert uris.contains(main_uri), "no edits for the open file"
+    assert uris.contains(geo_uri), "no edits for the sibling even when shadow-opened: " + uris.join(",")
+    c.closeAll(shadows)
+    var edited_main: str = applyEdits(mt, changes, main_uri)
+    var n_disk: int = applyWorkspaceEditToDisk(changes, open_uris)
+    assert n_disk == 1, "expected 1 file written to disk, got " + n_disk.toString()
+    assert not edited_main.contains("area"), "open buffer still mentions area: " + edited_main
+    assert edited_main.contains("use geo exposing surface") and edited_main.contains("surface(3)"), "open buffer edits wrong: " + edited_main
+    var geo_after: str = File.read(gp)
+    assert not geo_after.contains("area"), "geo.zbr on disk still mentions area: " + geo_after
+    assert geo_after.contains("def surface(s: int)") and geo_after.contains("4 * surface(s)"), "geo.zbr edits wrong: " + geo_after
+    # main.zbr on disk must be UNTOUCHED (it is open; the IDE owns it, unsaved)
+    assert File.read(mp) == mt, "the open file was rewritten on disk — the IDE would lose its unsaved state"
+
+    # simulate Save of the open buffer, then the whole thing must still run
+    File.write(mp, edited_main)
+    var after: str = runProgram(zebra, ws, "main.zbr")
+    assert after.contains("total=9"), "renamed program does not run: " + after
+
+    c.waitReply(c.shutdown(), 5000)
+    c.stop()
+    print("rename_workspace_test: ok")

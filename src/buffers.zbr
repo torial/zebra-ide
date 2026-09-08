@@ -83,6 +83,12 @@ class BufferSet
             i = i + 1
         return -1
 
+    def uris(): List(str)
+        var out: List(str) = List(str)()
+        for b in .items
+            out.add(b.uri)
+        return out
+
     def findUri(u: str): int
         var i: int = 0
         for b in .items

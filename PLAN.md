@@ -237,20 +237,31 @@ The compiler pin in `selfhost/main.zbr luiBuildZon` still points at zig-libui-ng
 works but auto-indent / margin-click / dirty-tracking via notify are inert until
 the pin moves. That is by design until Sean pushes.
 
+Update 2026-09-08 (Fable, unattended): the four compiler bugs the IDE surfaced (341, 342,
+345, 346) are FIXED in zebra-language 4784e06 and their workarounds are gone from this repo;
+fixing them found three more (350 return-split, 352 loop-var-vs-field, 353 File.write
+truncating before evaluating its content — the last two found by the NEW
+`src/rename_workspace_test.zbr`, the multi-file rename loop run end to end for the first
+time). Finding from that test: `zebra lsp` renames/references over OPEN documents only, so
+the IDE now shadow-opens the project root's `.zbr` files around a rename
+(`LspClient.openSiblings/closeAll`; `Model.shadow_uris`). check.sh is 10 steps, all green
+in the container. Compiler-side follow-up on the worklist: index `use`d modules from disk
+in `zebra lsp` (then the shadow-open becomes unnecessary and subdirectories work).
+
 Owed by Sean (in this order):
 1. Windows first run per README "First-run checklist" (nothing has been run with a
    window open; every layer below the window has a headless test that has been seen red).
 2. `git push` zig-libui-ng, then in zebra-language `bash tools/bump_libui_pin.sh e1b68d3`
    (or the pushed sha), rebuild, rerun checklist step 3 and 6.
 3. Delete `_to_delete/` in zebra-ide and in the wiki (the mount forbids deletes).
-4. Review the design calls recorded in BUGS.md BUG-336..349 (341, 342, 345, 346 open,
-   worked around in this repo with the BUG number beside each workaround).
+4. Review the design calls recorded in BUGS.md BUG-336..353 (all fixed except BUG-351,
+   `StringBuilder.build()` emptying the builder — your call which semantics is wanted).
 5. Push zebra-language / zebra-ide when tactically right.
 
 For the next Claude session (any model): read README.md, then `.claude/crew/LOG.md`
 (the refuter's and advocate's findings and what was done about them), then this file.
-Open worklist, none started: cleanroom seat uncalibrated; multi-file rename loop never
-executed against a real workspace; variables pane; clangd / zls clients; plugins
+Open worklist, none started: cleanroom seat uncalibrated; `zebra lsp` indexing of `use`d
+modules from disk (see 09-08 update); variables pane; clangd / zls clients; plugins
 (DynLib + gate manifest is the intended route); Haiku; `--listen` port to native;
 win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.

@@ -182,7 +182,7 @@ class GateRun
     var spec: GateSpec
     var proc: SysProcess? = nil
     var output: str = ""
-    var started_ms: int = 0        # DateTime epoch ms (BUG-345: Timer cannot be a field type)
+    var clock: Timer? = nil        # (was DateTime epoch-ms arithmetic: BUG-345, fixed 09-08)
     var elapsed_ms: int = 0
     var done: bool = false
     var timed_out: bool = false
@@ -202,7 +202,7 @@ class GateRun
             .output = "could not start: " + .spec.argv.join(" ")
             return false
         .proc = p
-        .started_ms = DateTime.now().epoch_ms
+        .clock = Timer.start()
         return true
 
     # Drain the pipes; returns true once the run has finished (result fields set).
@@ -211,7 +211,8 @@ class GateRun
             return true
         if .proc as p
             .output = .output + p.readAvailable() + p.readErrAvailable()
-            .elapsed_ms = DateTime.now().epoch_ms - .started_ms
+            if .clock as ck
+                .elapsed_ms = ck.elapsedMicros() / 1000
             if p.isRunning()
                 if .elapsed_ms > .spec.timeout_ms
                     p.kill()

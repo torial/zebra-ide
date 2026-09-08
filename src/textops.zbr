@@ -5,6 +5,8 @@
 #   indentFor         the auto-indent decision: previous line's indent, +4 after a block opener
 #   isBlockOpener     Zebra keywords / C-Zig braces
 
+use buffers exposing pathOfUri
+
 def lineStartOffsets(text: str): List(int)
     var offs: List(int) = List(int)()
     offs.add(0)
@@ -47,9 +49,25 @@ def applyEdits(text: str, edits: JsonValue, uri: str): str
         out = out[0..starts.at(idx)] + news.at(idx) + out[ends.at(idx)..out.len]
     return out
 
+# The on-disk half of a rename: every uri in `changes` that is NOT in `open_uris`
+# is rewritten in place (open ones belong to their Scintilla documents and are the
+# IDE's business). Returns how many files were written. Pure apart from File I/O,
+# so rename_workspace_test can drive it against a real server without a window.
+def applyWorkspaceEditToDisk(changes: JsonValue, open_uris: List(str)): int
+    var n: int = 0
+    for u in changes.keys()
+        if open_uris.contains(u)
+            continue
+        var p: str = pathOfUri(u)
+        if File.exists(p)
+            File.write(p, applyEdits(File.read(p), changes, u))
+            n = n + 1
+    return n
+
 def symbolLines(reply: JsonValue, lines: List(int)): str
     # DocumentSymbol[] (nested) or SymbolInformation[] (flat); both carry a name and a range.
-    # Returns the pane text (a StringBuilder parameter is const in Zebra — BUG-342).
+    # Returns the pane text. (Was a BUG-342 workaround; a StringBuilder parameter
+    # works since 09-08, but returning the text is the cleaner contract, so it stays.)
     var sink = StringBuilder()
     for s in reply.getList("result")
         var line: int = 0

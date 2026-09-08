@@ -125,6 +125,34 @@ class LspClient
     def didClose(uri: str): bool
         return .notify("textDocument/didClose", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"}}")
 
+    # Shadow-open every .zbr in `dir` that is not already open (uris in `exclude`), from
+    # disk, so a workspace-wide operation sees them. The server (`zebra lsp`, 09-08)
+    # resolves references/rename over OPEN documents only -- a `use`d module that is not
+    # open is invisible to it (rename_workspace_test found this: the rename came back for
+    # one file of two). Returns the uris opened; pass them to closeAll afterwards.
+    def openSiblings(dir: str, exclude: List(str)): List(str)
+        var opened: List(str) = List(str)()
+        if not File.exists(dir)
+            return opened
+        for entry in File.listDir(dir)          # `entry`, not `name`: BUG-352 (a loop var named like a field resolves to the field)
+            if not entry.endsWith(".zbr")
+                continue
+            var p: str = dir + "/" + entry
+            var u: str = "file://" + p.replace("\\", "/")
+            if p.len > 1 and p[1..2] == ":"
+                u = "file:///" + p.replace("\\", "/")
+            if exclude.contains(u)
+                continue
+            if File.isDir(p)
+                continue
+            if .didOpen(u, "zebra", 1, File.read(p))
+                opened.add(u)
+        return opened
+
+    def closeAll(uris: List(str))
+        for u in uris
+            .didClose(u)
+
     def positional(method: str, uri: str, line: int, col: int, extra: str): int
         return .request(method, "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"},\"position\":" + rangeJson(line, col) + extra + "}")
 

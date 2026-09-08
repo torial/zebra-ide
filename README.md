@@ -4,7 +4,7 @@ A lightweight IDE for Zebra, C and Zig, written in Zebra, on libui-ng + Scintill
 talking to `zebra lsp` and `zebra debug`. Everything the IDE does beyond editing also
 runs headless (`tools/check.sh`), so a window is never the only witness.
 
-Status 2026-09-07: plan phases P0–P4 are landed and pass every headless gate in a
+Status 2026-09-08: plan phases P0–P4 are landed and pass every headless gate in a
 Linux container. **Nothing has yet been run on Windows with a window open.** The
 first-run checklist below is written for exactly that moment.
 
@@ -59,14 +59,14 @@ window itself has none and has never been opened.
 | file | what | test |
 |---|---|---|
 | `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | tui compile + libui sema in `check.sh` |
-| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols) | `lsp_client_test.zbr` vs real `zebra lsp` |
+| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols; `openSiblings` shadow-opens a project's other .zbr files for a rename) | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp` |
 | `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
-| `src/textops.zbr` | WorkspaceEdit application, symbol outline, auto-indent decision (pure) | `textops_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 9 steps | — |
+| `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
+| `tools/check.sh` | the gate: all of the above, 10 steps | — |
 
 ## Known limits (stated, not hidden)
 
@@ -89,5 +89,10 @@ window itself has none and has never been opened.
   long pole and lives in the plan, not here.
 - Rename edits open buffers in memory (unsaved) and rewrites unopened files on disk
   in place, and says so in the status line. Close refuses once on unsaved changes.
+  `zebra lsp` resolves references and renames over OPEN documents only, so before a
+  rename the IDE shadow-opens every `.zbr` in the project root (the manifest's directory,
+  not recursive) and closes them after; a module in a subdirectory is not renamed.
+  (rename_workspace_test, 09-08 — the on-disk path had never run before it, and it found
+  two compiler bugs, BUG-352/353, on its first run.)
 - A gate that cannot run here (no lldb-dap) reports **SKIP**, not PASS — in the pane,
   in `gates.zbr`, and in `check.sh`.
