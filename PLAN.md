@@ -264,6 +264,15 @@ against the local zig-libui-ng checkout — the no-push route to every bridge fe
 The pin in luiBuildZon is still 93c7f54b. BUG-354 (assign to parameter leaks Zig) and
 BUG-355 (GUI-section types cannot cross modules) filed from this work.
 
+Even later (09-08, near the end): process plugins landed (4ff7923: manifest `tools`,
+hooks, reload, diags; design in wiki concept_zebra-ide-plugins v2 — DLL plugins wait on
+BUG-356, the compiler's shared-library round trip, pinned red as `dynlib-roundtrip`). A
+refuter round (opus) on keys / MVU visibility / tools found four defects, all applied
+(058d1d6; zig-libui-ng d6dcf28; zebra-language a9dc903): swallowChar lifetime, the sweep
+covering only id-keyed widgets, chained `${}` substitution, name-keyed tool bookkeeping —
+and asked for a headless Model harness, which now exists (`model_test.zbr`, check.sh 3d).
+BUG-357 (per-module preamble globals in GUI builds) filed. check.sh is 14 steps.
+
 Owed by Sean (in this order):
 1. Windows first run per README "First-run checklist" (nothing has been run with a
    window open; every layer below the window has a headless test that has been seen red).
@@ -286,7 +295,8 @@ rename on both (SKIP when absent). Sean made Fable the OWNER of the IDE, Zebra, 
 and libui-ng for now (2026-09-08), so libui-side limits (8 fixed tabs, no key events) are
 next, not accepted.
 
-Open worklist: `zebra lsp` dependents beyond one directory (recursive workspace scan, or a
-module-path list); BUG-354/355 in the compiler; plugins (DynLib + gate manifest is the intended route);
+Open worklist: BUG-356 (shared-library round trip → then DLL plugins), BUG-355/357 (GUI
+builds: one section / one preamble per project, not per module), BUG-354; `zebra lsp`
+dependents beyond one directory; plugins (DynLib + gate manifest is the intended route);
 Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.

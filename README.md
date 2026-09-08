@@ -46,7 +46,11 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    `set ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` before starting the IDE (the
    generated project then points at your local checkout); the permanent one is push
    zig-libui-ng, then `tools\bump_libui_pin.sh <sha>` in zebra-language. Editing works
-   either way.
+   either way. Three key-bridge probes the refuter could not run without a window: hold
+   Ctrl+S for two seconds — the buffer must gain no 0x13 bytes; with an IME active press
+   F9 then commit a composition — the first committed character must not be lost; press
+   F12 with an autocomplete/calltip open — its own keys must still work. Also close the
+   middle of three tabs: the row must close up with no gap.
 4. **Definition / References / Symbols / Rename** on `lsp.zbr` → panes fill; Jump
    works; rename across both open tabs.
 5. **Build**, then **Run gates** → the pane fills, verdict lines appear, a failing gate's
