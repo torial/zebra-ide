@@ -255,12 +255,25 @@ applied (zebra-language eea0a50). Recommendation on `--listen`: DEPRECATE rather
 The IDE speaks stdio; a native TCP relay needs a second thread or a non-blocking Tcp read
 the runtime does not have, for a client that no longer exists. Sean's call.
 
+Later (still 09-08, Fable as owner): keys before Scintilla (zig-libui-ng 8c205fd:
+uiScintillaOnKey, a comctl32 subclass; compiler fbf6410: editor.hotkey/takeKey), the libui
+section hides widgets the view stops emitting (same commit), so the IDE has unlimited
+path-keyed tabs and keyboard shortcuts (zebra-ide 9a30985, table in keys.zbr, keys_test).
+`ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` (zebra-language 7e469d6) builds GUI programs
+against the local zig-libui-ng checkout — the no-push route to every bridge feature.
+The pin in luiBuildZon is still 93c7f54b. BUG-354 (assign to parameter leaks Zig) and
+BUG-355 (GUI-section types cannot cross modules) filed from this work.
+
 Owed by Sean (in this order):
 1. Windows first run per README "First-run checklist" (nothing has been run with a
    window open; every layer below the window has a headless test that has been seen red).
-2. `git push` zig-libui-ng, then in zebra-language `bash tools/bump_libui_pin.sh e1b68d3`
-   (or the pushed sha), rebuild, rerun checklist step 3 and 6.
-3. Delete `_to_delete/` in zebra-ide and in the wiki (the mount forbids deletes).
+2. Either `set ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` before running the IDE (no push),
+   or `git push` zig-libui-ng and `bash tools/bump_libui_pin.sh 8c205fd` in zebra-language;
+   then rerun checklist steps 3 and 6 (notify bridge, keys, F9/F5).
+3. Delete `_to_delete/` in zebra-ide, zig-libui-ng, zebra-language(if present) and the wiki,
+   plus the stale `.git/objects/*/tmp_obj_*` files git could not unlink in those repos
+   (harmless litter; `git gc` will not remove them). The `.git/*.lock` files were moved
+   into `_to_delete/` so git keeps working.
 4. Review the design calls recorded in BUGS.md BUG-336..353 (all fixed except BUG-351,
    `StringBuilder.build()` emptying the builder — your call which semantics is wanted).
 5. Push zebra-language / zebra-ide when tactically right.
@@ -274,6 +287,6 @@ and libui-ng for now (2026-09-08), so libui-side limits (8 fixed tabs, no key ev
 next, not accepted.
 
 Open worklist: `zebra lsp` dependents beyond one directory (recursive workspace scan, or a
-module-path list); key events + growable/relabelable tabs (zig-libui-ng / libui-ng); plugins (DynLib + gate manifest is the intended route);
+module-path list); BUG-354/355 in the compiler; plugins (DynLib + gate manifest is the intended route);
 Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.

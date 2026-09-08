@@ -40,17 +40,21 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    squiggle + margin marker + boxed message appear within ~a second → LSP round trip.
    Open a `.c` or `.zig` file: the status line adds `clangd` / `zls` (or says it is not on
    PATH) and the same squiggles work there.
-3. **Type Enter after `def f()`** → the next line is indented. If not, the notify
-   bridge is not live: that is expected until zig-libui-ng is pushed and the pin bumped
-   (`tools\bump_libui_pin.sh <sha>` in zebra-language). Editing still works.
+3. **Type Enter after `def f()`** → the next line is indented, and **Ctrl+S saves**.
+   If not, the notify/key bridge is not live: expected until the compiler builds
+   against the new zig-libui-ng. Two ways to get there — the quick one needs no push:
+   `set ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` before starting the IDE (the
+   generated project then points at your local checkout); the permanent one is push
+   zig-libui-ng, then `tools\bump_libui_pin.sh <sha>` in zebra-language. Editing works
+   either way.
 4. **Definition / References / Symbols / Rename** on `lsp.zbr` → panes fill; Jump
    works; rename across both open tabs.
 5. **Build**, then **Run gates** → the pane fills, verdict lines appear, a failing gate's
    diagnostics are jumpable. (`zebra src\gates.zbr -- zebra-ide.json` is the same thing
    headless.)
-6. Put the caret on a line in a small program and press **Breakpoint** (the margin
-   click needs the notify bridge, which is absent until the pin bump — same as step
-   3), then **Debug** → yellow arrow on that line, frames in the debugger pane; Next
+6. Put the caret on a line in a small program and press **Breakpoint** or F9 (the
+   margin click and F9 need the bridge from step 3), then **Debug** or F5 → yellow
+   arrow on that line, frames in the debugger pane; Next
    moves it; Stop ends it. Under the frames, Globals / Registers lists fill in a beat
    later (Locals says why it is empty). If `lldb-dap` is missing, the debugger pane
    shows the relay's own message saying so and how to install it.
