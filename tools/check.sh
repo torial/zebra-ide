@@ -5,6 +5,8 @@
 #   3. textops_test      applyEdits / symbolLines / auto-indent, pure (headless)
 #   3a. keys_test        the shortcut table: no duplicate chords, Scintilla's own keys unclaimed
 #   3b. gates_test       manifest + runner vs the real compiler (headless)
+#   3c. tools_test       process plugins: manifest `tools`, ${file}/${word} substitution, a real
+#                        `zig fmt` reformat, a diagnostic-emitting tool, an on:save hook
 #   4. dap_client_test   DAP client vs real `zebra debug` + lldb-dap — SKIP (not PASS)
 #                        when lldb-dap is absent
 #   5. lsp_client_test   client vs a real `zebra lsp` (headless)
@@ -29,6 +31,7 @@ step "buffers_test";    (cd src && "$ZEBRA" buffers_test.zbr 2>&1 | tail -1 | gr
 step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | grep -q "textops_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "keys_test";       (cd src && "$ZEBRA" keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep -q "tools_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "dap_client_test"
 dap_out=$(cd src && "$ZEBRA" dap_client_test.zbr 2>&1 | tail -1)
 case "$dap_out" in

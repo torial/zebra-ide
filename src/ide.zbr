@@ -37,9 +37,9 @@
 
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
 use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName
-use gates exposing Manifest, GateSpec, GateRun, Diag, loadManifest, joinPath
+use gates exposing Manifest, GateSpec, GateRun, Diag, ToolSpec, loadManifest, joinPath, expandTool, toolUsesFile
 use dap exposing DapClient, DapFrame, DapVar, DapScope
-use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener
+use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener, wordAt
 use keys exposing shortcutAction, shortcutList, Shortcut
 use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE
 
@@ -62,6 +62,9 @@ class Model
     var servers: HashMap(str, LspClient)   # one language server per language: zebra / c / zig
     var servers_tried: List(str)           # languages whose server start already failed (say so once)
     var req_lang: str = ""                 # the language whose server holds the pending def/refs/sym/rename ids
+    var tool_reload: HashMap(str, str)     # running tool name → file to re-read after exit 0
+    var tool_nodiags: HashMap(str, bool)   # tool names whose output must NOT be marked as diagnostics
+    var summary_pending: bool = false      # print "N/N passed" when the queue drains (gates/build only)
     var bufs: BufferSet
     var status: str = "no file"
     var pending_text: str = ""           # text seen last tick (for quiet detection)
@@ -119,6 +122,8 @@ class Model
         .pane_diag = List(Diag)()
         .pane_diag_idx = List(int)()
         .dbg_var_req = HashMap(int, str)()
+        .tool_reload = HashMap(str, str)()
+        .tool_nodiags = HashMap(str, bool)()
 
 union Msg
     tick
@@ -147,6 +152,7 @@ union Msg
     debug_stop
     jump_frame
     find_next
+    run_tool: int
     replace_one
     replace_all
 
@@ -383,6 +389,7 @@ def openFile(m: Model, p: str): bool
         m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only — " + serverLabel(b.lang) + " not running)"
     else
         m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only)"
+    runHooks(m, "open")
     return true
 
 def closeCurrent(m: Model)
@@ -689,8 +696,16 @@ def pollGates(m: Model)
             for d in r.diags
                 paneAppend(m, "   ↳ " + d.path + ":" + d.line.toString() + ": " + d.severity + ": " + d.message, d)
             paneAppend(m, r.verdict() + "  " + r.spec.name + "  (" + r.elapsed_ms.toString() + " ms, exit " + r.exit_code.toString() + ")", nil)
-            markBuildDiags(m, r.diags)
-            if m.queue.len == 0
+            if m.tool_nodiags.get(r.spec.name) == nil
+                markBuildDiags(m, r.diags)
+            else
+                m.tool_nodiags.remove(r.spec.name)
+            if m.tool_reload.get(r.spec.name) as rp
+                m.tool_reload.remove(r.spec.name)
+                if r.exit_code == 0
+                    reloadBuffer(m, rp)
+            if m.queue.len == 0 and m.summary_pending
+                m.summary_pending = false
                 var ran: int = m.gates_done - m.gates_skipped
                 var summary: str = (ran - m.gates_failed).toString() + "/" + ran.toString() + " passed"
                 if m.gates_skipped > 0
@@ -702,6 +717,63 @@ def pollGates(m: Model)
         else
             # live tail while it runs: keep the pane's last line as a heartbeat
             m.status = "running " + r.spec.name + " … " + (r.elapsed_ms / 1000).toString() + " s"
+
+# ── Tools (process plugins; wiki concept_zebra-ide-plugins) ───────────────────
+# Re-read a file from disk into its buffer (a formatter rewrote it). The current
+# buffer keeps its caret line; a hidden buffer's text is replaced in place.
+def reloadBuffer(m: Model, path: str)
+    var i: int = m.bufs.find(path)
+    if i < 0
+        return
+    if not File.exists(path)
+        return
+    var text: str = File.read(path)
+    if i == m.bufs.current
+        var line: int = cursorLine(m.editor!)
+        m.editor!.setText(text)
+        m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+        gotoLineCol(m.editor!, line, 0)
+        m.pending_text = text
+        m.bufs.items.at(i).last_sent = ""       # the server gets the new text on the next tick
+        m.status = "reloaded " + baseName(path)
+    else
+        var hb: Buffer = m.bufs.items.at(i)
+        if hb.docptr != 0
+            var keep: int = m.editor!.sci(SCI_GETDOCPOINTER, 0, 0)
+            m.editor!.sci(SCI_SETDOCPOINTER, 0, hb.docptr)
+            m.editor!.setText(text)
+            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+            m.editor!.sci(SCI_SETDOCPOINTER, 0, keep)
+        else
+            hb.text = text
+        hb.last_sent = ""
+
+# Run one tool on the current buffer: save first when the tool names ${file} and the
+# buffer is dirty (a formatter on unsaved text would be a lie), substitute, enqueue.
+def runTool(m: Model, t: ToolSpec)
+    if m.bufs.cur() as b
+        var text: str = m.editor!.getText()
+        if toolUsesFile(t) and m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+            File.write(b.path, text)
+            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+        var line: int = cursorLine(m.editor!)
+        var col: int = cursorCol(m.editor!)
+        var spec: GateSpec = expandTool(t, b.path, line + 1, col + 1, wordAt(text, line, col))
+        if t.reload
+            m.tool_reload.put(spec.name, b.path)
+        if not t.diags
+            m.tool_nodiags.put(spec.name, true)
+        m.queue.add(spec)
+        if m.run == nil
+            paneClear(m)
+            startNextGate(m)
+    else
+        m.status = "tool " + t.name + ": no file open"
+
+def runHooks(m: Model, event: str)
+    if m.manifest as mf
+        for t in mf.hooks(event)
+            runTool(m, t)
 
 # ── Debugger ─────────────────────────────────────────────────────────────────
 def dbgPane(m: Model, text: str)
@@ -1026,8 +1098,15 @@ def update(m: Model, msg: Msg): Model
                 File.write(sb.path, m.editor!.getText())
                 m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
                 m.status = "saved " + baseName(sb.path)
+                runHooks(m, "save")
             else
                 m.status = "nothing to save"
+            return m
+        on Msg.run_tool as ti
+            if m.manifest as mf
+                var bl: List(ToolSpec) = mf.buttons()
+                if ti >= 0 and ti < bl.len
+                    runTool(m, bl.at(ti))
             return m
         on Msg.select_tab as ti
             switchTo(m, ti)
@@ -1056,6 +1135,7 @@ def update(m: Model, msg: Msg): Model
                     m.gates_skipped = 0
                     m.queue = List(GateSpec)()
                     m.queue.add(bspec)
+                    m.summary_pending = true
                     startNextGate(m)
                 else
                     m.status = "manifest has no build entry"
@@ -1076,6 +1156,7 @@ def update(m: Model, msg: Msg): Model
                     m.queue.add(g)
                 if m.queue.len == 0
                     m.status = "manifest has no gates"
+                m.summary_pending = true
                 startNextGate(m)
             else
                 m.status = "no project loaded (zebra-ide.json)"
@@ -1239,6 +1320,14 @@ def view(g: Gui, m: Model)
                 g.send(Msg.run_gates)
             if g.button("Reload project")
                 g.send(Msg.reload_manifest)
+            # Tools row: the manifest's process plugins (buttons; hooks run on save/open)
+            if m.manifest as mft
+                var tools: List(ToolSpec) = mft.buttons()
+                var ti: int = 0
+                while ti < tools.len
+                    if g.buttonId("##tool:" + tools.at(ti).name, tools.at(ti).label)
+                        g.send(Msg.run_tool(ti))
+                    ti = ti + 1
             if g.button("Bookmark")
                 g.send(Msg.toggle_bookmark)
         using g.hbox("##findbar", false)

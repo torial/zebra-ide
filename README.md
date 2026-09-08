@@ -73,11 +73,11 @@ window itself has none and has never been opened.
 | `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames, scopes/variables) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
-| `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
+| `src/gates.zbr` | project manifest (gates + tools) + non-blocking runner + diagnostic parser; CLI | `gates_test.zbr`, `tools_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
 | `src/keys.zbr` | the shortcut table (chord → action), pure | `keys_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 12 steps | — |
+| `tools/check.sh` | the gate: all of the above, 13 steps | — |
 
 ## Known limits (stated, not hidden)
 
@@ -104,9 +104,14 @@ window itself has none and has never been opened.
   on both). If `clangd` / `zls` is not on PATH the status line says so once and that
   language keeps colouring only. zls wants `zig` on PATH; clangd uses default flags
   unless a `compile_commands.json` is beside the file.
-- **Plugins: not started.** Named in the ask; nothing in this tree yet. The intended
-  route is Zebra's existing DynLib plugin system plus the gate manifest for anything
-  that is a process.
+- **Plugins, kind 1 — process tools (09-08):** `"tools": [...]` in `zebra-ide.json`;
+  each is a command with `${file}` `${dir}` `${root}` `${stem}` `${line}` `${col}`
+  `${word}` substituted, run through the gate runner (never blocks), output in the
+  gate pane. `"reload": true` re-reads the file after exit 0 (formatters), `"diags":
+  true` marks `path:line:col: error:` lines in the editor, `"on": "save" | "open"`
+  makes it a hook instead of a button. A dirty buffer is saved before a tool that
+  names `${file}`. Design: wiki `concept_zebra-ide-plugins`. Kind 2 (in-process
+  DLLs) waits on the compiler's shared-library round trip (BUG-356, pinned gate).
 - **Haiku: not started.** The GUI is built for Windows first; the compiler-side
   cross-platform work (libui-ng's Haiku backend, a Scintilla platform layer) is the
   long pole and lives in the plan, not here.

@@ -1,11 +1,16 @@
 {
   "name": "zebra-ide",
   "build": { "cmd": ["zebra", "-c", "--check-full", "--gui-backend=tui", "ide.zbr"], "cwd": "src" },
+  "tools": [
+    { "name": "wc",    "label": "Word count", "cmd": ["wc", "-w", "${file}"] },
+    { "name": "check", "label": "check.sh",   "cmd": ["bash", "tools/check.sh"], "diags": true, "timeout_ms": 900000 }
+  ],
   "gates": [
     { "name": "sci_test",        "cmd": ["zebra", "sci_test.zbr"],        "cwd": "src", "expect": "sci_test: ok" },
     { "name": "buffers_test",    "cmd": ["zebra", "buffers_test.zbr"],    "cwd": "src", "expect": "buffers_test: ok" },
     { "name": "textops_test",    "cmd": ["zebra", "textops_test.zbr"],    "cwd": "src", "expect": "textops_test: ok" },
     { "name": "keys_test",       "cmd": ["zebra", "keys_test.zbr"],       "cwd": "src", "expect": "keys_test: ok" },
+    { "name": "tools_test",      "cmd": ["zebra", "tools_test.zbr"],      "cwd": "src", "expect": "tools_test: ok" },
     { "name": "gates_test",      "cmd": ["zebra", "gates_test.zbr"],      "cwd": "src", "expect": "gates_test: ok", "timeout_ms": 300000 },
     { "name": "dap_client_test", "cmd": ["zebra", "dap_client_test.zbr"], "cwd": "src", "expect": "dap_client_test: ok", "skip": "dap_client_test: skipped", "timeout_ms": 600000 },
     { "name": "lsp_client_test", "cmd": ["zebra", "lsp_client_test.zbr"], "cwd": "src", "expect": "lsp_client_test: ok", "timeout_ms": 300000 },

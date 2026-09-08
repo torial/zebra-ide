@@ -1,0 +1,61 @@
+# tools_test — process plugins (manifest `tools`), headless, against real commands.
+#   zebra src/tools_test.zbr
+# Controls: manifest parsing (button vs hook, flags); placeholder substitution; a
+# formatter tool (`zig fmt ${file}`, reload) actually reformats a file on disk; a
+# diagnostic-emitting tool's output parses into a Diag; `${word}` reaches argv.
+use gates exposing Manifest, ToolSpec, GateSpec, GateRun, Diag, loadManifest, expandTool, toolUsesFile, runToEnd, diagsIn
+
+def main()
+    var ws: str = "/tmp/zebra_ide_tools"
+    if sys.getenv("TEMP") as tmp
+        ws = tmp.replace("\\", "/") + "/zebra_ide_tools"
+    if not File.exists(ws)
+        Dir.create(ws)
+    var zig_file: str = ws + "/ugly.zig"
+    File.write(zig_file, "const std=@import(\"std\");\npub fn main() void {   std.debug.print(\"x\",.{});}\n")
+    var script: str = ws + "/lint.sh"
+    File.write(script, "#!/usr/bin/env bash\necho \"$1:2:5: error: word was $2\"\nexit 1\n")
+    var manifest: str = ws + "/zebra-ide.json"
+    File.write(manifest, """{ "name": "tools-fixture",
+  "tools": [
+    { "name": "format", "label": "Format", "cmd": ["zig", "fmt", "${file}"], "reload": true },
+    { "name": "lint", "cmd": ["bash", "lint.sh", "${file}", "${word}"], "diags": true },
+    { "name": "onsave", "on": "save", "cmd": ["bash", "-c", "echo saved ${stem} at ${line}:${col} in ${dir}"] }
+  ] }""")
+
+    var mopt = loadManifest(manifest)
+    assert mopt != nil, "manifest did not load"
+    var m: Manifest = mopt!
+    assert m.tools.len == 3, "expected 3 tools, got " + m.tools.len.toString()
+    assert m.buttons().len == 2 and m.hooks("save").len == 1 and m.hooks("open").len == 0, "button/hook split wrong"
+    var fmt: ToolSpec = m.tools.at(0)
+    assert fmt.label == "Format" and fmt.reload and not fmt.diags and fmt.event == "", "format flags wrong"
+    assert m.tools.at(1).label == "lint" and m.tools.at(1).diags, "lint flags wrong"
+    assert toolUsesFile(fmt) and not toolUsesFile(m.tools.at(2)), "toolUsesFile wrong"
+    assert fmt.cwd == ws, "tool cwd should be the manifest dir, got " + fmt.cwd
+
+    # substitution
+    var hook: GateSpec = expandTool(m.tools.at(2), ws + "/main.zbr", 7, 3, "area")
+    var joined: str = hook.argv.join(" ")
+    assert joined.contains("saved main at 7:3 in " + ws), "substitution wrong: " + joined
+    var lint: GateSpec = expandTool(m.tools.at(1), ws + "/main.zbr", 2, 5, "area")
+    assert lint.argv.at(2) == ws + "/main.zbr" and lint.argv.at(3) == "area", "lint argv wrong: " + lint.argv.join(" ")
+
+    # a real formatter: zig fmt rewrites the file (reload = the IDE re-reads it)
+    var before: str = File.read(zig_file)
+    var r1: GateRun = runToEnd(expandTool(fmt, zig_file, 1, 1, ""))
+    assert r1.exit_code == 0, "zig fmt failed: " + r1.output
+    var after: str = File.read(zig_file)
+    assert after != before and after.contains("const std = @import"), "zig fmt did not reformat the file: " + after
+
+    # a diagnostic-emitting tool: output parses into a Diag with the substituted word
+    var r2: GateRun = runToEnd(lint)
+    assert r2.exit_code == 1, "lint should exit 1"
+    assert r2.diags.len == 1, "expected 1 diag, got " + r2.diags.len.toString() + " from: " + r2.output
+    var d: Diag = r2.diags.at(0)
+    assert d.line == 2 and d.col == 5 and d.severity == "error" and d.message == "word was area", "diag wrong: " + d.message
+
+    # the hook runs and prints its substituted line
+    var r3: GateRun = runToEnd(hook)
+    assert r3.exit_code == 0 and r3.output.contains("saved main at 7:3"), "hook output wrong: " + r3.output
+    print("tools_test: ok")

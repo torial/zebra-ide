@@ -1,5 +1,5 @@
 # textops_test — the IDE's pure text helpers, headless.   zebra src/textops_test.zbr
-use textops exposing applyEdits, symbolLines, indentFor, isBlockOpener, lineStartOffsets
+use textops exposing wordAt, applyEdits, symbolLines, indentFor, isBlockOpener, lineStartOffsets
 
 def main()
     # line offsets
@@ -42,4 +42,12 @@ def main()
     assert indentFor("zebra", src, 0) == ""
     assert indentFor("c", "int main(void) {\n", 1) == "    "
     assert indentFor("c", "\tx;\n", 1) == "\t"
+    # wordAt (tools: ${word})
+    assert wordAt("total = total + area(3)", 0, 17) == "area", "wordAt start"
+    assert wordAt("total = total + area(3)", 0, 19) == "area", "wordAt middle"
+    assert wordAt("total = total + area(3)", 0, 20) == "area", "wordAt end"
+    assert wordAt("total = total + area(3)", 0, 21) == "3", "wordAt on the argument"
+    assert wordAt("total = total + area(3)", 0, 6) == "", "wordAt on ="
+    assert wordAt("a\nfoo_bar2 x", 1, 4) == "foo_bar2", "wordAt line 2"
+    assert wordAt("x", 5, 0) == "", "wordAt past end"
     print("textops_test: ok")

@@ -26,6 +26,9 @@
 # clang) or `path:line: error: msg` (zebra) — becomes a Diag the IDE can turn
 # into markers; the CLI prints them under the verdict.
 #
+# `tools` (09-08, process plugins): see ToolSpec below — `cmd` with `${file}`-style
+# placeholders, an optional `on: "save"|"open"` hook, `reload`, `diags`.
+#
 # Runs never block: GateRun wraps sys.spawnPipedIn and drains both pipes on each
 # poll(); the CLI polls in a sleep loop, the GUI polls from its tick. Registration
 # = a row in the manifest. Nothing here knows about Scintilla or libui.
@@ -45,14 +48,46 @@ struct GateSpec
     var skip: str          # substring meaning "this gate could not run here" → SKIP, never PASS
     var timeout_ms: int
 
+# A process plugin (wiki concept_zebra-ide-plugins, kind 1): a command the IDE runs
+# on the current document. `${file}` `${dir}` `${root}` `${stem}` `${line}` `${col}`
+# `${word}` are substituted in argv; `on` = "" (a button) | "save" | "open" (a hook);
+# `reload` re-reads the file after exit 0 (formatters); `diags` marks the output's
+# diagnostics in the editor like a failing gate does.
+struct ToolSpec
+    var name: str
+    var label: str
+    var argv: List(str)
+    var cwd: str
+    var event: str
+    var reload: bool
+    var diags: bool
+    var timeout_ms: int
+
 class Manifest
     var name: str = ""
     var root: str = ""          # directory the manifest lives in
     var build: GateSpec? = nil
     var gates: List(GateSpec)
+    var tools: List(ToolSpec)
 
     cue init()
         .gates = List(GateSpec)()
+        .tools = List(ToolSpec)()
+
+    # The tools that run as a hook for `event` ("save" | "open").
+    def hooks(event: str): List(ToolSpec)
+        var out: List(ToolSpec) = List(ToolSpec)()
+        for t in .tools
+            if t.event == event
+                out.add(t)
+        return out
+
+    def buttons(): List(ToolSpec)
+        var out: List(ToolSpec) = List(ToolSpec)()
+        for t in .tools
+            if t.event == ""
+                out.add(t)
+        return out
 
     def find(name: str): GateSpec?
         for g in .gates
@@ -106,6 +141,60 @@ def specFrom(j: JsonValue, root: str): GateSpec
         name = j.getStr("name")
     return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, skip: skip, timeout_ms: timeout)
 
+def toolFrom(j: JsonValue, root: str): ToolSpec
+    var argv: List(str) = List(str)()
+    for a in j.getList("cmd")
+        argv.add(jsonStr(a))
+    var name: str = ""
+    if not j.at("name").isNull()
+        name = j.getStr("name")
+    var label: str = name
+    if not j.at("label").isNull()
+        label = j.getStr("label")
+    var cwd: str = "."
+    if not j.at("cwd").isNull()
+        cwd = j.getStr("cwd")
+    var event: str = ""
+    if not j.at("on").isNull()
+        event = j.getStr("on")
+    var reload: bool = false
+    if not j.at("reload").isNull()
+        reload = j.getBool("reload")
+    var diags: bool = false
+    if not j.at("diags").isNull()
+        diags = j.getBool("diags")
+    var timeout: int = 600000
+    if not j.at("timeout_ms").isNull()
+        timeout = j.getInt("timeout_ms")
+    return ToolSpec(name: name, label: label, argv: argv, cwd: joinPath(root, cwd), event: event, reload: reload, diags: diags, timeout_ms: timeout)
+
+def toolUsesFile(t: ToolSpec): bool
+    for a in t.argv
+        if a.contains(r"${file}")
+            return true
+    return false
+
+def fileStem(p: str): str
+    var n: str = p.replace("\\", "/")
+    var i: int = n.lastIndexOf("/")
+    var b: str = n
+    if i >= 0
+        b = n[i+1..n.len]
+    var d: int = b.lastIndexOf(".")
+    if d > 0
+        b = b[0..d]
+    return b
+
+# Substitute the placeholders for one run; the result is a GateSpec the runner takes.
+def expandTool(t: ToolSpec, file: str, line: int, col: int, word: str): GateSpec
+    var argv: List(str) = List(str)()
+    var dir: str = dirOf(file)
+    for a in t.argv
+        var x: str = a.replace(r"${file}", file).replace(r"${dir}", dir).replace(r"${root}", t.cwd).replace(r"${stem}", fileStem(file))
+        x = x.replace(r"${line}", line.toString()).replace(r"${col}", col.toString()).replace(r"${word}", word)
+        argv.add(x)
+    return GateSpec(name: t.name, argv: argv, cwd: t.cwd, expect: "", skip: "", timeout_ms: t.timeout_ms)
+
 def loadManifest(path: str): Manifest?
     if not File.exists(path)
         return nil
@@ -125,6 +214,9 @@ def loadManifest(path: str): Manifest?
     if not j.at("gates").isNull()
         for g in j.getList("gates")
             m.gates.add(specFrom(g, m.root))
+    if not j.at("tools").isNull()
+        for t in j.getList("tools")
+            m.tools.add(toolFrom(t, m.root))
     return m
 
 # ── Diagnostic lines ─────────────────────────────────────────────────────────

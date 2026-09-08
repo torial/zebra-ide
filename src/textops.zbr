@@ -107,3 +107,29 @@ def indentFor(lang: str, text: str, line: int): str
     if isBlockOpener(lang, prev)
         indent = indent + "    "
     return indent
+
+# The identifier under (line, col), 0-based; "" when the caret is not on one.
+def wordAt(text: str, line: int, col: int): str
+    var li: int = 0
+    for l in text.split("\n")
+        if li == line
+            if col < 0 or col > l.len
+                return ""
+            var a: int = col
+            while a > 0 and isIdentByte(l[a-1..a])
+                a = a - 1
+            var b: int = col
+            while b < l.len and isIdentByte(l[b..b+1])
+                b = b + 1
+            return l[a..b]
+        li = li + 1
+    return ""
+
+def isIdentByte(c: str): bool
+    if c == "_"
+        return true
+    if c >= "a" and c <= "z"
+        return true
+    if c >= "A" and c <= "Z"
+        return true
+    return c >= "0" and c <= "9"
