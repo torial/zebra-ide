@@ -31,7 +31,7 @@ def main()
     var fmt: ToolSpec = m.tools.at(0)
     assert fmt.label == "Format" and fmt.reload and not fmt.diags and fmt.event == "", "format flags wrong"
     assert m.tools.at(1).label == "lint" and m.tools.at(1).diags, "lint flags wrong"
-    assert toolUsesFile(fmt) and not toolUsesFile(m.tools.at(2)), "toolUsesFile wrong"
+    assert toolUsesFile(fmt) and toolUsesFile(m.tools.at(2)), "toolUsesFile wrong (the hook names stem and dir, which derive from the file)"
     assert fmt.cwd == ws, "tool cwd should be the manifest dir, got " + fmt.cwd
 
     # substitution
@@ -39,6 +39,18 @@ def main()
     var joined: str = hook.argv.join(" ")
     assert joined.contains("saved main at 7:3 in " + ws), "substitution wrong: " + joined
     var lint: GateSpec = expandTool(m.tools.at(1), ws + "/main.zbr", 2, 5, "area")
+    assert lint.tag != hook.tag and lint.tag.startsWith("tool:lint#"), "runs must carry distinct tags: " + lint.tag
+    # one pass: a path containing a placeholder is NOT rewritten by a later placeholder
+    # (refuter, 09-08), unknown placeholders survive, `${files}` is not `${file}`
+    var tricky: GateSpec = expandTool(m.tools.at(1), r"/x/${word}/a.zbr", 1, 1, "PWNED")
+    assert tricky.argv.at(2) == r"/x/${word}/a.zbr", "path was re-substituted: " + tricky.argv.at(2)
+    assert tricky.argv.at(3) == "PWNED"
+    var sc: ToolSpec = ToolSpec(name: "t", label: "t", argv: [r"${HOME}", r"${files}", r"${file}${line}", "$", "{"], cwd: ws, event: "", reload: false, diags: false, timeout_ms: 1000)
+    var tr: GateSpec = expandTool(sc, "/p/q.zbr", 9, 1, "")
+    assert tr.argv.at(0) == r"${HOME}" and tr.argv.at(1) == r"${files}" and tr.argv.at(2) == "/p/q.zbr9" and tr.argv.at(3) == "$" and tr.argv.at(4) == "{", "edge substitution wrong: " + tr.argv.join("|")
+    assert toolUsesFile(sc), "a tool naming the file placeholder uses the file"
+    var sd: ToolSpec = ToolSpec(name: "d", label: "d", argv: ["fmt", r"${dir}"], cwd: ws, event: "", reload: true, diags: false, timeout_ms: 1000)
+    assert toolUsesFile(sd), "dir derives from the file: the dirty buffer must be saved first"
     assert lint.argv.at(2) == ws + "/main.zbr" and lint.argv.at(3) == "area", "lint argv wrong: " + lint.argv.join(" ")
 
     # a real formatter: zig fmt rewrites the file (reload = the IDE re-reads it)

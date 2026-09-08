@@ -1,5 +1,5 @@
 # keys_test — the shortcut table is well-formed, headless.
-use keys exposing Shortcut, shortcutList, shortcutAction, chord, shortcutHelp, KEY_CTRL, KEY_SHIFT, VK_F5
+use keys exposing Shortcut, shortcutList, shortcutAction, chord, shortcutHelp, KEY_CTRL, KEY_SHIFT, KEY_ALT, VK_F5
 
 def main()
     var list: List(Shortcut) = shortcutList()
@@ -26,5 +26,8 @@ def main()
     assert shortcutAction(chord(0x56, KEY_CTRL), false) == "", "Ctrl+V must stay Scintilla's"
     assert shortcutAction(chord(0x5A, KEY_CTRL), false) == "", "Ctrl+Z must stay Scintilla's"
     assert shortcutAction(chord(0x53, 0), false) == "", "plain S must stay Scintilla's"
+    # no Ctrl+Alt chord, ever: AltGr is Ctrl+Alt on European layouts
+    for sc in list
+        assert sc.mods != KEY_CTRL + KEY_ALT and sc.mods != KEY_CTRL + KEY_ALT + KEY_SHIFT, sc.label + " claims a Ctrl+Alt chord (AltGr)"
     assert shortcutHelp().contains("Ctrl+S  save")
     print("keys_test: ok")

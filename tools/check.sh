@@ -7,6 +7,9 @@
 #   3b. gates_test       manifest + runner vs the real compiler (headless)
 #   3c. tools_test       process plugins: manifest `tools`, ${file}/${word} substitution, a real
 #                        `zig fmt` reformat, a diagnostic-emitting tool, an on:save hook
+#   3d. model_test       the IDE's Model driven headless on the tui backend: save-before-run,
+#                        reload only after exit 0, no-diags tools never mark, per-run bookkeeping
+#                        with two queued runs, the on:save hook through the queue (refuter's ask)
 #   4. dap_client_test   DAP client vs real `zebra debug` + lldb-dap — SKIP (not PASS)
 #                        when lldb-dap is absent
 #   5. lsp_client_test   client vs a real `zebra lsp` (headless)
@@ -32,6 +35,7 @@ step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | gr
 step "keys_test";       (cd src && "$ZEBRA" keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep -q "tools_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "model_test (tui, headless Model)"; (cd src && rm -rf model_test_gui_tui && "$ZEBRA" --gui-backend=tui model_test.zbr 2>&1 | tail -1 | grep -q "model_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "dap_client_test"
 dap_out=$(cd src && "$ZEBRA" dap_client_test.zbr 2>&1 | tail -1)
 case "$dap_out" in

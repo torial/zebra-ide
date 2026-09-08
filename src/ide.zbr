@@ -62,8 +62,8 @@ class Model
     var servers: HashMap(str, LspClient)   # one language server per language: zebra / c / zig
     var servers_tried: List(str)           # languages whose server start already failed (say so once)
     var req_lang: str = ""                 # the language whose server holds the pending def/refs/sym/rename ids
-    var tool_reload: HashMap(str, str)     # running tool name → file to re-read after exit 0
-    var tool_nodiags: HashMap(str, bool)   # tool names whose output must NOT be marked as diagnostics
+    var tool_reload: HashMap(str, str)     # run tag → file to re-read after exit 0
+    var tool_nodiags: HashMap(str, bool)   # run tags whose output must NOT be marked as diagnostics
     var summary_pending: bool = false      # print "N/N passed" when the queue drains (gates/build only)
     var bufs: BufferSet
     var status: str = "no file"
@@ -468,12 +468,14 @@ def ideInit(): Model
     m.dbg_pane!.setText("(debugger: click the margin for a breakpoint, then Debug)")
     loadProject(m)
     startLsp(m)
-    var args: List(str) = sys.args()
-    var ai: int = 1
-    while ai < args.len
-        openFile(m, args.at(ai))
-        ai = ai + 1
+    for p in startup_files
+        openFile(m, p)
     return m
+
+# Files named on the command line, read ONLY in main(): a `use`d module's `sys.args()`
+# reads an uninitialised preamble global in a GUI build (BUG-357), and model_test
+# imports this module.
+var startup_files: List(str) = List(str)()
 
 # On Enter: copy the previous line's indentation, plus one level after a block opener.
 # Runs from the notify bridge (SCN_CHARADDED '\n'), so it costs nothing while idle.
@@ -696,12 +698,12 @@ def pollGates(m: Model)
             for d in r.diags
                 paneAppend(m, "   ↳ " + d.path + ":" + d.line.toString() + ": " + d.severity + ": " + d.message, d)
             paneAppend(m, r.verdict() + "  " + r.spec.name + "  (" + r.elapsed_ms.toString() + " ms, exit " + r.exit_code.toString() + ")", nil)
-            if m.tool_nodiags.get(r.spec.name) == nil
+            if m.tool_nodiags.get(r.spec.tag) == nil
                 markBuildDiags(m, r.diags)
             else
-                m.tool_nodiags.remove(r.spec.name)
-            if m.tool_reload.get(r.spec.name) as rp
-                m.tool_reload.remove(r.spec.name)
+                m.tool_nodiags.remove(r.spec.tag)
+            if m.tool_reload.get(r.spec.tag) as rp
+                m.tool_reload.remove(r.spec.tag)
                 if r.exit_code == 0
                     reloadBuffer(m, rp)
             if m.queue.len == 0 and m.summary_pending
@@ -717,6 +719,15 @@ def pollGates(m: Model)
         else
             # live tail while it runs: keep the pane's last line as a heartbeat
             m.status = "running " + r.spec.name + " … " + (r.elapsed_ms / 1000).toString() + " s"
+
+# For headless tests (model_test): a CodeEditor cannot cross a module boundary
+# (BUG-355), but its text can.
+def editorText(m: Model): str
+    return m.editor!.getText()
+
+def setEditorText(m: Model, text: str)
+    m.editor!.setText(text)
+    m.pending_text = text
 
 # ── Tools (process plugins; wiki concept_zebra-ide-plugins) ───────────────────
 # Re-read a file from disk into its buffer (a formatter rewrote it). The current
@@ -753,16 +764,21 @@ def reloadBuffer(m: Model, path: str)
 def runTool(m: Model, t: ToolSpec)
     if m.bufs.cur() as b
         var text: str = m.editor!.getText()
-        if toolUsesFile(t) and m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+        # dirty = Scintilla says so, OR the text differs from the file (the tui backend's
+        # stub answers 0 to every sci message; the comparison is what model_test relies on)
+        var dirty: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+        if not dirty and File.exists(b.path)
+            dirty = text != File.read(b.path)
+        if toolUsesFile(t) and dirty
             File.write(b.path, text)
             m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
         var line: int = cursorLine(m.editor!)
         var col: int = cursorCol(m.editor!)
         var spec: GateSpec = expandTool(t, b.path, line + 1, col + 1, wordAt(text, line, col))
         if t.reload
-            m.tool_reload.put(spec.name, b.path)
+            m.tool_reload.put(spec.tag, b.path)
         if not t.diags
-            m.tool_nodiags.put(spec.name, true)
+            m.tool_nodiags.put(spec.tag, true)
         m.queue.add(spec)
         if m.run == nil
             paneClear(m)
@@ -1411,4 +1427,9 @@ def view(g: Gui, m: Model)
                + "   " + m.status)
 
 def main()
+    var args: List(str) = sys.args()
+    var ai: int = 1
+    while ai < args.len
+        startup_files.add(args.at(ai))
+        ai = ai + 1
     Gui.run("zebra-ide", 1200, 800, ideInit, update, view)

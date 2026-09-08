@@ -47,6 +47,9 @@ struct GateSpec
     var expect: str
     var skip: str          # substring meaning "this gate could not run here" → SKIP, never PASS
     var timeout_ms: int
+    var tag: str           # per-RUN identity for tools ("" for gates): the IDE keys its
+                           # reload / no-diags bookkeeping by this, never by name (refuter,
+                           # 09-08: two queued runs of one tool shared a name-keyed entry)
 
 # A process plugin (wiki concept_zebra-ide-plugins, kind 1): a command the IDE runs
 # on the current document. `${file}` `${dir}` `${root}` `${stem}` `${line}` `${col}`
@@ -139,7 +142,7 @@ def specFrom(j: JsonValue, root: str): GateSpec
     var name: str = ""
     if not j.at("name").isNull()
         name = j.getStr("name")
-    return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, skip: skip, timeout_ms: timeout)
+    return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, skip: skip, timeout_ms: timeout, tag: "")
 
 def toolFrom(j: JsonValue, root: str): ToolSpec
     var argv: List(str) = List(str)()
@@ -168,11 +171,52 @@ def toolFrom(j: JsonValue, root: str): ToolSpec
         timeout = j.getInt("timeout_ms")
     return ToolSpec(name: name, label: label, argv: argv, cwd: joinPath(root, cwd), event: event, reload: reload, diags: diags, timeout_ms: timeout)
 
+# Does the tool name the current file in any form? `${dir}` `${stem}` `${root}` derive
+# from the file's path too, and a formatter spelled `zig fmt ${dir}` rewrites the file
+# on disk just the same — so all four imply "save the dirty buffer first" (refuter, 09-08).
 def toolUsesFile(t: ToolSpec): bool
     for a in t.argv
-        if a.contains(r"${file}")
+        if a.contains(r"${file}") or a.contains(r"${dir}") or a.contains(r"${stem}") or a.contains(r"${root}")
             return true
     return false
+
+# One left-to-right pass: a value substituted for one placeholder is never re-scanned
+# for another (refuter, 09-08: chained .replace let a path containing `${word}` be
+# rewritten by the ${word} pass — `$`, `{`, `}` are legal in file names).
+def substitute(a: str, file: str, dir: str, root: str, stem: str, line: int, col: int, word: str): str
+    var sb = StringBuilder()
+    var i: int = 0
+    while i < a.len
+        if a[i..i+1] == "$" and i + 1 < a.len and a[i+1..i+2] == "{"
+            var rest: str = a[i+2..a.len]
+            var k: int = rest.indexOf("}")
+            if k >= 0
+                var key: str = rest[0..k]
+                var val: str = ""
+                var known: bool = true
+                if key == "file"
+                    val = file
+                else if key == "dir"
+                    val = dir
+                else if key == "root"
+                    val = root
+                else if key == "stem"
+                    val = stem
+                else if key == "line"
+                    val = line.toString()
+                else if key == "col"
+                    val = col.toString()
+                else if key == "word"
+                    val = word
+                else
+                    known = false
+                if known
+                    sb.append(val)
+                    i = i + 2 + k + 1
+                    continue
+        sb.append(a[i..i+1])
+        i = i + 1
+    return sb.build()
 
 def fileStem(p: str): str
     var n: str = p.replace("\\", "/")
@@ -190,10 +234,11 @@ def expandTool(t: ToolSpec, file: str, line: int, col: int, word: str): GateSpec
     var argv: List(str) = List(str)()
     var dir: str = dirOf(file)
     for a in t.argv
-        var x: str = a.replace(r"${file}", file).replace(r"${dir}", dir).replace(r"${root}", t.cwd).replace(r"${stem}", fileStem(file))
-        x = x.replace(r"${line}", line.toString()).replace(r"${col}", col.toString()).replace(r"${word}", word)
-        argv.add(x)
-    return GateSpec(name: t.name, argv: argv, cwd: t.cwd, expect: "", skip: "", timeout_ms: t.timeout_ms)
+        argv.add(substitute(a, file, dir, t.cwd, fileStem(file), line, col, word))
+    tool_run_seq = tool_run_seq + 1
+    return GateSpec(name: t.name, argv: argv, cwd: t.cwd, expect: "", skip: "", timeout_ms: t.timeout_ms, tag: "tool:" + t.name + "#" + tool_run_seq.toString())
+
+var tool_run_seq: int = 0
 
 def loadManifest(path: str): Manifest?
     if not File.exists(path)
@@ -209,7 +254,7 @@ def loadManifest(path: str): Manifest?
     if not j.at("build").isNull()
         var b: GateSpec = specFrom(j.getObj("build"), m.root)
         if b.name == ""
-            b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, skip: b.skip, timeout_ms: b.timeout_ms)
+            b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, skip: b.skip, timeout_ms: b.timeout_ms, tag: "")
         m.build = b
     if not j.at("gates").isNull()
         for g in j.getList("gates")

@@ -68,7 +68,7 @@ window itself has none and has never been opened.
 
 | file | what | test |
 |---|---|---|
-| `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | tui compile + libui sema in `check.sh` |
+| `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | `model_test.zbr` (Model driven headless on tui), tui compile + libui sema in `check.sh` |
 | `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols); one instance per language server | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp`; `cross_lsp_test.zbr` vs clangd + zls |
 | `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames, scopes/variables) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
@@ -77,7 +77,7 @@ window itself has none and has never been opened.
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
 | `src/keys.zbr` | the shortcut table (chord → action), pure | `keys_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 13 steps | — |
+| `tools/check.sh` | the gate: all of the above, 14 steps | — |
 
 ## Known limits (stated, not hidden)
 

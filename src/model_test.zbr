@@ -1,0 +1,97 @@
+# model_test — the IDE's Model driven headless on the tui backend (no window): the
+# functions tools_test cannot reach — runTool's save-before-run, reload after exit 0
+# and not otherwise, no-diags marking, per-run bookkeeping with two queued runs of
+# one tool, hooks through the queue (refuter, 2026-09-08: "a headless Model harness
+# would have caught the two name-keyed-map defects without a window").
+#   zebra --gui-backend=tui src/model_test.zbr
+use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText
+use gates exposing ToolSpec, Manifest, loadManifest
+
+def drain(m: Model)
+    var spins: int = 0
+    while (m.run != nil or m.queue.len > 0) and spins < 3000
+        pollGates(m)
+        sys.sleep(20)
+        spins = spins + 1
+    assert m.run == nil and m.queue.len == 0, "queue did not drain"
+
+def paneText(m: Model): str
+    return m.pane_lines.join("\n")
+
+def main()
+    var ws: str = "/tmp/zebra_ide_model"
+    if sys.getenv("TEMP") as tmp
+        ws = tmp.replace("\\", "/") + "/zebra_ide_model"
+    if not File.exists(ws)
+        Dir.create(ws)
+    var f: str = ws + "/m.zig"
+    File.write(f, "pub fn main() void {\n}\n")
+    File.write(ws + "/zebra-ide.json", """{ "name": "model-fixture",
+  "tools": [
+    { "name": "format", "cmd": ["zig", "fmt", "${file}"], "reload": true },
+    { "name": "breaker", "cmd": ["bash", "-c", "echo tail >> ${file}; exit 1"], "reload": true },
+    { "name": "noisy", "cmd": ["bash", "-c", "echo ${file}:1:1: error: fake from noisy"] },
+    { "name": "loud", "cmd": ["bash", "-c", "echo ${file}:1:1: error: real from loud"], "diags": true },
+    { "name": "onsave", "on": "save", "cmd": ["bash", "-c", "echo hook-ran-${stem}"] }
+  ] }""")
+
+    var m: Model = ideInit()
+    m.manifest = loadManifest(ws + "/zebra-ide.json")
+    assert m.manifest != nil, "manifest"
+    assert openFile(m, f), "open"
+    var tools: List(ToolSpec) = m.manifest!.buttons()
+
+    # 1. save-before-run + reload after exit 0: the EDITOR's (unsaved, ugly) text is what
+    #    gets formatted, and the editor shows the formatted result afterwards
+    setEditorText(m, "pub fn main() void {   const x=1; _=x;}\n")
+    runTool(m, tools.at(0))
+    assert File.read(f).contains("const x=1"), "dirty buffer was not saved before the tool ran"
+    drain(m)
+    var disk: str = File.read(f)
+    assert disk.contains("const x = 1;"), "zig fmt did not reformat: " + disk
+    assert editorText(m) == disk, "editor was not reloaded after exit 0"
+
+    # 2. reload must NOT happen after a non-zero exit, even though the file changed
+    var before: str = editorText(m)
+    runTool(m, tools.at(1))
+    drain(m)
+    assert File.read(f).contains("tail"), "breaker did not touch the file"
+    assert editorText(m) == before, "editor was reloaded after a FAILED tool"
+    File.write(f, before)                       # put the file back for the next steps
+
+    # 3. a tool without `diags` never marks the editor, even queued twice (refuter: the
+    #    old name-keyed map lost the second run); a tool with `diags` does
+    m.errors = 0
+    runTool(m, tools.at(2))
+    runTool(m, tools.at(2))                     # queued behind the first
+    assert m.queue.len == 1, "second run should be queued"
+    drain(m)
+    assert m.errors == 0, "a no-diags tool marked " + m.errors.toString() + " error(s)"
+    assert paneText(m).contains("fake from noisy"), "noisy output missing from the pane"
+    runTool(m, tools.at(3))
+    drain(m)
+    assert m.errors == 1, "the diags tool should have marked 1 error, got " + m.errors.toString()
+
+    # 4. the save hook runs through the queue on Msg.save_file
+    setEditorText(m, before + "// edited\n")
+    var m2: Model = update(m, Msg.save_file)
+    assert m2 == m
+    assert File.read(f).contains("// edited"), "save did not write"
+    drain(m)
+    assert paneText(m).contains("hook-ran-m"), "on:save hook did not run: " + paneText(m)
+
+    # 5. two reload runs in flight resolve to their OWN files (refuter: name-keyed reload
+    #    reloaded the wrong buffer)
+    var g: str = ws + "/g.zig"
+    File.write(g, "pub fn other() void {\n}\n")
+    assert openFile(m, g), "open g"
+    setEditorText(m, "pub fn other() void {   const y=2; _=y;}\n")
+    runTool(m, tools.at(0))                     # format g (runs now)
+    assert openFile(m, f), "back to f"
+    setEditorText(m, "pub fn main() void {   const z=3; _=z;}\n")
+    runTool(m, tools.at(0))                     # format f (queued)
+    drain(m)
+    assert editorText(m).contains("const z = 3;"), "f was not reloaded with its own formatted text: " + editorText(m)
+    assert openFile(m, g), "back to g"
+    assert editorText(m).contains("const y = 2;"), "g was not reloaded with its own formatted text: " + editorText(m)
+    print("model_test: ok")

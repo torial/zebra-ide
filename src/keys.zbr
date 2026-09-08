@@ -25,6 +25,9 @@ struct Shortcut
 def chord(vk: int, mods: int): int
     return mods * 65536 + vk
 
+# NEVER claim a Ctrl+Alt chord: on European layouts AltGr reports as Ctrl+Alt, so a
+# Ctrl+Alt+Q claim would eat `@` on a German keyboard (refuter, 09-08 — safe today only
+# because no such chord exists here; keys_test enforces it).
 def shortcutList(): List(Shortcut)
     var out: List(Shortcut) = List(Shortcut)()
     out.add(Shortcut(vk: 0x53, mods: KEY_CTRL, action: "save", label: "Ctrl+S"))

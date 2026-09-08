@@ -1,10 +1,9 @@
-zig-out/
-.zig-cache/
-*.exe
-*.pdb
-zl.tgz
-_stage/
 # The crew commons is address-private (see .claude/crew/commons/README.md):
 # its contents never enter git history.
 .claude/crew/commons/*
 !.claude/crew/commons/README.md
+
+# generated GUI projects and emitted Zig (check.sh builds them beside the sources)
+src/*_gui_tui/
+src/*_gui_libui_ng/
+src/*.zig
