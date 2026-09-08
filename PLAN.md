@@ -247,6 +247,12 @@ the IDE now shadow-opens the project root's `.zbr` files around a rename
 (`LspClient.openSiblings/closeAll`; `Model.shadow_uris`). check.sh is 10 steps, all green
 in the container. Compiler-side follow-up on the worklist: index `use`d modules from disk
 in `zebra lsp` (then the shadow-open becomes unnecessary and subdirectories work).
+Later the same night: variables pane landed (scopes/variables under the frames; b687d48),
+and the cleanroom seat is now calibrated — its two findings (selfhost-only fixes must be
+stated in the ledger; the var-init `split` site lacked the user-method guard) were both
+applied (zebra-language eea0a50). Recommendation on `--listen`: DEPRECATE rather than port.
+The IDE speaks stdio; a native TCP relay needs a second thread or a non-blocking Tcp read
+the runtime does not have, for a client that no longer exists. Sean's call.
 
 Owed by Sean (in this order):
 1. Windows first run per README "First-run checklist" (nothing has been run with a
@@ -260,8 +266,7 @@ Owed by Sean (in this order):
 
 For the next Claude session (any model): read README.md, then `.claude/crew/LOG.md`
 (the refuter's and advocate's findings and what was done about them), then this file.
-Open worklist, none started: cleanroom seat uncalibrated; `zebra lsp` indexing of `use`d
-modules from disk (see 09-08 update); variables pane; clangd / zls clients; plugins
-(DynLib + gate manifest is the intended route); Haiku; `--listen` port to native;
-win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
+Open worklist, none started: `zebra lsp` indexing of `use`d modules from disk (see 09-08
+update); clangd / zls clients; plugins (DynLib + gate manifest is the intended route);
+Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.
