@@ -17,6 +17,9 @@ first-run checklist below is written for exactly that moment.
   still works.
 - For gates: the manifest commands use `bash tools/*.sh` — run the IDE from Git Bash,
   or edit `zebra-ide.json` to whatever runs your scripts.
+- For C and Zig language support: `clangd` (part of LLVM, same install as lldb-dap)
+  and `zls` (a zls release matching the Zig version; `zls-x86_64-windows.zip`) on PATH.
+  Optional — without them those languages get colouring only.
 
 ## Run
 
@@ -35,6 +38,8 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    zebra-language is the smaller version if the IDE itself will not open).
 2. **Status line says `zebra lsp`** and, after typing a deliberate error, a red
    squiggle + margin marker + boxed message appear within ~a second → LSP round trip.
+   Open a `.c` or `.zig` file: the status line adds `clangd` / `zls` (or says it is not on
+   PATH) and the same squiggles work there.
 3. **Type Enter after `def f()`** → the next line is indented. If not, the notify
    bridge is not live: that is expected until zig-libui-ng is pushed and the pin bumped
    (`tools\bump_libui_pin.sh <sha>` in zebra-language). Editing still works.
@@ -60,14 +65,14 @@ window itself has none and has never been opened.
 | file | what | test |
 |---|---|---|
 | `src/ide.zbr` | the program (MVU; model is a class; panes are read-only editors) | tui compile + libui sema in `check.sh` |
-| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols) | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp` |
+| `src/lsp.zbr` | LSP client (initialize, didOpen/Change, definition, references, rename, symbols); one instance per language server | `lsp_client_test.zbr`, `rename_workspace_test.zbr` vs real `zebra lsp`; `cross_lsp_test.zbr` vs clangd + zls |
 | `src/dap.zbr` | DAP client over `zebra debug` (breakpoints, step, frames, scopes/variables) | `dap_client_test.zbr` vs real relay + lldb-dap |
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest + non-blocking gate runner + diagnostic parser; CLI | `gates_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 10 steps | — |
+| `tools/check.sh` | the gate: all of the above, 11 steps | — |
 
 ## Known limits (stated, not hidden)
 
@@ -80,9 +85,13 @@ window itself has none and has never been opened.
   says so rather than showing a blank. (09-08; dap_client_test checks the scopes.)
 - The tui backend only proves the program compiles; its editor is a text stub.
 - Squiggles on `selfhost/CodeGen.zbr` lag by the compiler's own check time (~6 s).
-- C and Zig: syntax colouring only. One language server (`zebra lsp`) is wired; C and
-  Zig buffers are not sent to it, so they get no diagnostics or navigation until a
-  clangd / zls client is added. The status line says so when such a file opens.
+- C and Zig have language servers now (09-08): a C buffer goes to `clangd`, a Zig
+  buffer to `zls`, each started the first time such a file opens and each getting
+  only its own language's files. Diagnostics, Definition, References, Symbols and
+  Rename work through the same client as `zebra lsp` (cross_lsp_test proves all four
+  on both). If `clangd` / `zls` is not on PATH the status line says so once and that
+  language keeps colouring only. zls wants `zig` on PATH; clangd uses default flags
+  unless a `compile_commands.json` is beside the file.
 - **Plugins: not started.** Named in the ask; nothing in this tree yet. The intended
   route is Zebra's existing DynLib plugin system plus the gate manifest for anything
   that is a process.

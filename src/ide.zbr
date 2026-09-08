@@ -57,7 +57,9 @@ class Model
     var editor: CodeEditor? = nil
     var refs: CodeEditor? = nil          # references pane (read-only)
     var outline: CodeEditor? = nil       # symbols pane (read-only)
-    var lsp: LspClient? = nil
+    var servers: HashMap(str, LspClient)   # one language server per language: zebra / c / zig
+    var servers_tried: List(str)           # languages whose server start already failed (say so once)
+    var req_lang: str = ""                 # the language whose server holds the pending def/refs/sym/rename ids
     var bufs: BufferSet
     var status: str = "no file"
     var pending_text: str = ""           # text seen last tick (for quiet detection)
@@ -73,7 +75,6 @@ class Model
     var new_name: str = ""
     var find_text: str = ""
     var replace_text: str = ""
-    var lsp_ok: bool = false
     var errors: int = 0
     var warnings: int = 0
     var overlay_ready: bool = false      # Scintilla exists only after the first render
@@ -109,6 +110,8 @@ class Model
         .ref_uris = List(str)()
         .sym_lines = List(int)()
         .bufs = BufferSet()
+        .servers = HashMap(str, LspClient)()
+        .servers_tried = List(str)()
         .queue = List(GateSpec)()
         .pane_lines = List(str)()
         .pane_diag = List(Diag)()
@@ -233,17 +236,65 @@ def compilerPath(): str
             return z
     return "zebra"
 
-def startLsp(m: Model)
+# The command that serves a language. `zebra lsp` from the compiler; clangd and zls
+# from PATH (C and Zig). Started lazily, the first time a buffer of that language
+# opens; a server that cannot start is reported once in the status line and the
+# language keeps colouring only.
+def serverArgv(lang: str): List(str)
     var argv: List(str) = List(str)()
-    argv.add(compilerPath())
-    argv.add("lsp")
+    if lang == "zebra"
+        argv.add(compilerPath())
+        argv.add("lsp")
+    else if lang == "c"
+        argv.add("clangd")
+        argv.add("--log=error")
+    else if lang == "zig"
+        argv.add("zls")
+    return argv
+
+def serverLabel(lang: str): str
+    if lang == "zebra"
+        return "zebra lsp"
+    if lang == "c"
+        return "clangd"
+    if lang == "zig"
+        return "zls"
+    return ""
+
+def startServer(m: Model, lang: str): LspClient?
+    if m.servers.get(lang) as have
+        return have
+    if m.servers_tried.contains(lang)
+        return nil
+    m.servers_tried.add(lang)
+    var argv: List(str) = serverArgv(lang)
+    if argv.len == 0
+        return nil
     var c = LspClient()
-    if not c.start("zebra", argv)
-        m.status = "could not start `" + compilerPath() + " lsp` (set ZEBRA_COMPILER or put zebra on PATH)"
-        return
-    m.lsp = c
+    if not c.start(lang, argv)
+        if lang == "zebra"
+            m.status = "could not start `" + compilerPath() + " lsp` (set ZEBRA_COMPILER or put zebra on PATH)"
+        else
+            m.status = serverLabel(lang) + " not on PATH — " + lang + " gets colouring only"
+        return nil
+    m.servers.put(lang, c)
     c.initialize(uriOf(sys.cwd()))
-    m.lsp_ok = true
+    return c
+
+# The server for a language, if it is running (started or not).
+def lspFor(m: Model, lang: str): LspClient?
+    if m.servers.get(lang) as c
+        return c
+    return nil
+
+# The server for the current buffer's language.
+def lspCur(m: Model): LspClient?
+    if m.bufs.cur() as b
+        return lspFor(m, b.lang)
+    return nil
+
+def startLsp(m: Model)
+    startServer(m, "zebra")
 
 # ── Documents: one control, many Scintilla documents ─────────────────────────
 # Save the view state Scintilla does not keep per document.
@@ -271,11 +322,11 @@ def showBuffer(m: Model, i: int)
     m.quiet = 0
     m.errors = b.errors
     m.warnings = b.warnings
-    if m.lsp as c
+    if lspFor(m, b.lang) as c
         if c.initialized and c.diagnostics.get(b.uri) == nil and b.opened_lsp
             c.diagnostics.put(b.uri, List(LspDiagnostic)())   # nothing pending: overlay stays as drawn
     # diagnostics for this document, if any arrived while it was hidden
-    if m.lsp as c2
+    if lspFor(m, b.lang) as c2
         if c2.diagnostics.get(b.uri) as ds
             applyDiagnostics(m, ds)
             c2.diagnostics.remove(b.uri)
@@ -319,17 +370,20 @@ def openFile(m: Model, p: str): bool
     m.quiet = 0
     m.errors = 0
     m.warnings = 0
-    # Only Zebra buffers go to `zebra lsp`: it would report a valid C or Zig file as
-    # a Zebra parse error — a fabricated diagnostic (advocate finding 3). Until a
-    # clangd/zls client exists, C and Zig get colouring and nothing pretends more.
-    if m.lsp as c
-        if c.initialized and b.lang == "zebra"
+    # Each buffer goes to ITS language's server (zebra lsp / clangd / zls), never to
+    # another's: `zebra lsp` would report a valid C file as a Zebra parse error, a
+    # fabricated diagnostic (advocate finding 3, 09-07). A server that is not
+    # running yet is started here; the tick's late-initialize opens the buffer once
+    # the server answers initialize.
+    m.status = "opened " + baseName(p)
+    if startServer(m, b.lang) as c
+        if c.initialized
             c.didOpen(b.uri, b.lang, 1, text)
             b.opened_lsp = true
-    if b.lang == "zebra"
-        m.status = "opened " + baseName(p)
+    else if serverLabel(b.lang) != ""
+        m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only — " + serverLabel(b.lang) + " not running)"
     else
-        m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only, no language server yet)"
+        m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only)"
     return true
 
 def closeCurrent(m: Model)
@@ -337,7 +391,7 @@ def closeCurrent(m: Model)
     if i < 0
         return
     var b: Buffer = m.bufs.items.at(i)
-    if m.lsp as c
+    if lspFor(m, b.lang) as c
         if b.opened_lsp
             c.didClose(b.uri)
     var doc: int = b.docptr
@@ -818,23 +872,29 @@ def tick(m: Model)
     var modified: bool = m.editor!.takeModified()
     pollGates(m)
     pollDebug(m)
-    if m.lsp == nil
+    if m.servers.count() == 0
         return
-    var c: LspClient = m.lsp!
-    c.poll()
-    # late initialize: open every buffer the server has not seen
-    if c.initialized
-        var oi: int = 0
-        while oi < m.bufs.count()
-            var ob: Buffer = m.bufs.items.at(oi)
-            if not ob.opened_lsp and ob.lang == "zebra"
-                var otext: str = ob.text
-                if oi == m.bufs.current
-                    otext = m.editor!.getText()
-                c.didOpen(ob.uri, ob.lang, ob.version, otext)
-                ob.last_sent = otext
-                ob.opened_lsp = true
-            oi = oi + 1
+    # every server: drain its pipe; once it is initialized, open the buffers of its
+    # language it has not seen (late initialize)
+    for lang in m.servers.keys()
+        var sc: LspClient = m.servers.fetch(lang)
+        sc.poll()
+        if sc.initialized
+            var oi: int = 0
+            while oi < m.bufs.count()
+                var ob: Buffer = m.bufs.items.at(oi)
+                if not ob.opened_lsp and ob.lang == lang
+                    var otext: str = ob.text
+                    if oi == m.bufs.current
+                        otext = m.editor!.getText()
+                    sc.didOpen(ob.uri, ob.lang, ob.version, otext)
+                    ob.last_sent = otext
+                    ob.opened_lsp = true
+                oi = oi + 1
+    var copt: LspClient? = lspCur(m)
+    if copt == nil
+        return
+    var c: LspClient = copt!
     if m.bufs.cur() as cb
         if modified or m.tick_n % 10 == 0 or m.pending_text != cb.last_sent
             var now: str = m.editor!.getText()
@@ -853,10 +913,16 @@ def tick(m: Model)
             cb.errors = m.errors
             cb.warnings = m.warnings
             c.diagnostics.remove(cb.uri)      # consumed; the next publish re-arms
+    # replies: on the server the request went to (ids are per server; the user may
+    # have switched to a buffer of another language meanwhile)
+    var ropt: LspClient? = lspFor(m, m.req_lang)
+    if ropt == nil
+        return
+    var rc: LspClient = ropt!
     if m.def_id != 0
-        if c.takeReply(m.def_id) as r
+        if rc.takeReply(m.def_id) as r
             m.def_id = 0
-            var locs: List(LspLocation) = c.locations(r)
+            var locs: List(LspLocation) = rc.locations(r)
             if locs.len == 0
                 m.status = "no definition"
             else
@@ -869,9 +935,9 @@ def tick(m: Model)
                     gotoLineCol(m.editor!, target.line, target.col)
                     m.status = "definition: " + baseName(pathOfUri(target.uri)) + ":" + (target.line + 1).toString()
     if m.refs_id != 0
-        if c.takeReply(m.refs_id) as r
+        if rc.takeReply(m.refs_id) as r
             m.refs_id = 0
-            var locs: List(LspLocation) = c.locations(r)
+            var locs: List(LspLocation) = rc.locations(r)
             var sb = StringBuilder()
             m.ref_lines = List(int)()
             m.ref_uris = List(str)()
@@ -884,7 +950,7 @@ def tick(m: Model)
             m.refs!.setReadOnly(true)
             m.status = locs.len.toString() + " reference(s)"
     if m.sym_id != 0
-        if c.takeReply(m.sym_id) as r
+        if rc.takeReply(m.sym_id) as r
             m.sym_id = 0
             m.sym_lines = List(int)()
             var outline_text: str = symbolLines(r, m.sym_lines)
@@ -893,7 +959,7 @@ def tick(m: Model)
             m.outline!.setReadOnly(true)
             m.status = m.sym_lines.len.toString() + " symbol(s)"
     if m.rename_id != 0
-        if c.takeReply(m.rename_id) as r
+        if rc.takeReply(m.rename_id) as r
             m.rename_id = 0
             var res = r.at("result")
             if res.isNull() or res.at("changes").isNull()
@@ -1041,26 +1107,30 @@ def update(m: Model, msg: Msg): Model
                     gotoLineCol(m.editor!, d.line - 1, col)
             return m
         on Msg.goto_def
-            if m.lsp as c
+            if lspCur(m) as c
                 if m.bufs.cur() as b
+                    m.req_lang = b.lang
                     m.def_id = c.definition(b.uri, cursorLine(m.editor!), cursorCol(m.editor!))
             return m
         on Msg.find_refs
-            if m.lsp as c
+            if lspCur(m) as c
                 if m.bufs.cur() as b
+                    m.req_lang = b.lang
                     m.refs_id = c.references(b.uri, cursorLine(m.editor!), cursorCol(m.editor!))
             return m
         on Msg.symbols
-            if m.lsp as c
+            if lspCur(m) as c
                 if m.bufs.cur() as b
+                    m.req_lang = b.lang
                     m.sym_id = c.documentSymbol(b.uri)
             return m
         on Msg.rename
             if m.new_name == ""
                 m.status = "rename: type the new name first"
                 return m
-            if m.lsp as c
+            if lspCur(m) as c
                 if m.bufs.cur() as b
+                    m.req_lang = b.lang
                     # `zebra lsp` (09-08) resolves the `use` graph from disk itself:
                     # the modules this file uses + same-directory dependents, whether
                     # or not they are open. (An earlier version shadow-opened every
@@ -1187,11 +1257,15 @@ def view(g: Gui, m: Model)
         if m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
             dirty = " *"
         var lsp_s: str = "no lsp"
-        if m.lsp as lc
-            if lc.initialized
-                lsp_s = "zebra lsp"
-            else
-                lsp_s = "lsp starting…"
+        if m.servers.count() > 0
+            var parts: List(str) = List(str)()
+            for sl in m.servers.keys()
+                var lc: LspClient = m.servers.fetch(sl)
+                if lc.initialized
+                    parts.add(serverLabel(sl))
+                else
+                    parts.add(serverLabel(sl) + " starting…")
+            lsp_s = parts.join(" · ")
         var cur_path: str = ""
         if m.bufs.cur() as vb
             cur_path = vb.path

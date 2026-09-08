@@ -8,8 +8,11 @@
 #                        when lldb-dap is absent
 #   5. lsp_client_test   client vs a real `zebra lsp` (headless)
 #   5b. rename_workspace_test  the multi-file rename loop end to end: two files, one open,
-#                        shadow-open siblings, in-memory + on-disk halves, then the renamed
-#                        program still runs (headless; found BUG-352/353 on 09-08)
+#                        in-memory + on-disk halves, then the renamed program still runs
+#                        (headless; found BUG-352/353 and the open-docs-only server on 09-08)
+#   5c. cross_lsp_test   the same client against clangd (C) and zls (Zig): diagnostics on a
+#                        broken edit, definition, references, rename — SKIP (not PASS) when a
+#                        server is not on PATH
 #   6. ide.zbr on tui    compile control for the app (no native widgets needed)
 #   7. libui sema        `zig build-obj` for x86_64-windows against zig-libui-ng bindings
 #                        (LIBUI_BINDINGS=<zig-libui-ng/src>; skipped if absent)
@@ -33,6 +36,13 @@ case "$dap_out" in
 esac
 step "lsp_client_test"; (cd src && "$ZEBRA" lsp_client_test.zbr 2>&1 | tail -1 | grep -q "lsp_client_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "rename_workspace_test"; (cd src && "$ZEBRA" rename_workspace_test.zbr 2>&1 | tail -1 | grep -q "rename_workspace_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "cross_lsp_test (clangd + zls)"
+cross_out=$(cd src && "$ZEBRA" cross_lsp_test.zbr 2>&1 | tail -1)
+case "$cross_out" in
+  *"cross_lsp_test: ok"*) echo PASS ;;
+  *"cross_lsp_test: skipped"*) echo "SKIP ($cross_out)" ;;
+  *) echo "FAIL ($cross_out)"; fail=1 ;;
+esac
 step "ide.zbr (tui, compile only)"
 (cd src && rm -rf ide_gui_tui && "$ZEBRA" -c --check-full --gui-backend=tui ide.zbr >/dev/null 2>&1; [ -f ide_gui_tui/zig-out/bin/app ] || [ -f ide_gui_tui/zig-out/bin/app.exe ]) && echo PASS || { echo FAIL; fail=1; }
 B=${LIBUI_BINDINGS:-}

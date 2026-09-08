@@ -1,0 +1,145 @@
+# cross_lsp_test — the LSP client against clangd and zls, headless. The same client
+# that talks to `zebra lsp` must get diagnostics, definition, references and rename
+# from the two foreign servers, on a fixture each in a scratch workspace.
+#   zebra src/cross_lsp_test.zbr
+# Prints `cross_lsp_test: skipped (<server> not on PATH)` — a SKIP, never a PASS —
+# when a server is missing; check.sh shows it as SKIP.
+use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
+
+def findLine(text: str, needle: str): int
+    var i: int = 0
+    for l in text.split("\n")
+        if l.contains(needle)
+            return i
+        i = i + 1
+    return -1
+
+def colOf(text: str, line: int, needle: str): int
+    var i: int = 0
+    for l in text.split("\n")
+        if i == line
+            return l.indexOf(needle)
+        i = i + 1
+    return -1
+
+def waitDiags(c: LspClient, uri: str, ms: int): List(LspDiagnostic)?
+    var waited: int = 0
+    while waited < ms
+        c.poll()
+        if c.diagnostics.get(uri) as ds
+            return ds
+        sys.sleep(50)
+        waited = waited + 50
+    return nil
+
+# One server, one fixture: returns "" on success, else the failure text.
+def exercise(server: str, argv: List(str), lang: str, ws: str, fname: str, good: str, bad: str, def_needle: str, call_needle: str, sym: str): str
+    var path: str = ws + "/" + fname
+    File.write(path, good)
+    var uri: str = "file://" + path
+    var c = LspClient()
+    if not c.start(server, argv)
+        return "skipped (" + server + " not on PATH)"
+    var init = c.waitReply(c.initialize("file://" + ws), 15000)
+    if init == nil
+        return server + ": no initialize reply; log: " + c.log().join(" | ")
+    if not c.initialized
+        return server + ": client did not mark itself initialized"
+    if not c.didOpen(uri, lang, 1, good)
+        return server + ": didOpen failed"
+    # a clean file: diagnostics arrive empty (or not at all within the window — both fine)
+    var d0 = waitDiags(c, uri, 8000)
+    if d0 != nil and d0!.len != 0
+        return server + ": clean fixture got " + d0!.len.toString() + " diagnostic(s): " + d0!.at(0).message
+    # a broken edit: at least one error diagnostic, on the line we broke
+    c.diagnostics.remove(uri)
+    if not c.didChange(uri, 2, bad)
+        return server + ": didChange failed"
+    var d1 = waitDiags(c, uri, 15000)
+    if d1 == nil
+        return server + ": no diagnostics for the broken edit"
+    if d1!.len == 0
+        return server + ": broken edit produced 0 diagnostics"
+    var bad_line: int = findLine(bad, "BROKEN")
+    var on_line: bool = false
+    for d in d1!
+        if d.line == bad_line and d.severity == 1
+            on_line = true
+    if not on_line
+        return server + ": no error on the broken line " + bad_line.toString() + " (first: line " + d1!.at(0).line.toString() + " " + d1!.at(0).message + ")"
+    # back to the good text; navigation on `sym`
+    c.didChange(uri, 3, good)
+    var call_line: int = findLine(good, call_needle)
+    var call_col: int = colOf(good, call_line, sym)
+    var def_line: int = findLine(good, def_needle)
+    var dr = c.waitReply(c.definition(uri, call_line, call_col), 15000)
+    if dr == nil
+        return server + ": no definition reply"
+    var dl: List(LspLocation) = c.locations(dr!)
+    if dl.len < 1 or dl.at(0).line != def_line
+        var got: str = "none"
+        if dl.len > 0
+            got = dl.at(0).line.toString()
+        return server + ": definition should land on line " + def_line.toString() + ", got " + got
+    var rr = c.waitReply(c.references(uri, call_line, call_col), 15000)
+    if rr == nil
+        return server + ": no references reply"
+    var rl: List(LspLocation) = c.locations(rr!)
+    if rl.len < 2
+        return server + ": expected def + call references, got " + rl.len.toString()
+    var rn = c.waitReply(c.rename(uri, call_line, call_col, sym + "2"), 15000)
+    if rn == nil
+        return server + ": no rename reply"
+    var res = rn!.at("result")
+    if res.isNull()
+        return server + ": rename returned null"
+    var n_edits: int = 0
+    if not res.at("changes").isNull()
+        for e in res.getObj("changes").getList(uri)
+            n_edits = n_edits + 1
+    else if not res.at("documentChanges").isNull()
+        for dc in res.getList("documentChanges")
+            for e in dc.getList("edits")
+                n_edits = n_edits + 1
+    if n_edits < 2
+        return server + ": rename should edit def + call, got " + n_edits.toString() + " edits"
+    c.waitReply(c.shutdown(), 5000)
+    c.stop()
+    return ""
+
+def main()
+    var ws: str = "/tmp/zebra_ide_cross_lsp"
+    if sys.getenv("TEMP") as tmp
+        ws = tmp.replace("\\", "/") + "/zebra_ide_cross_lsp"
+    if not File.exists(ws)
+        Dir.create(ws)
+
+    var c_good: str = "int square(int s) {\n    return s * s;\n}\n\nint main(void) {\n    int total = 0;\n    total = total + square(3);\n    return total;\n}\n"
+    var c_bad: str = "int square(int s) {\n    return s * s;\n}\n\nint main(void) {\n    int total = 0;\n    total = total + square(3) BROKEN;\n    return total;\n}\n"
+    var cargv: List(str) = List(str)()
+    cargv.add("clangd")
+    cargv.add("--log=error")
+    var r1: str = exercise("clangd", cargv, "c", ws, "a.c", c_good, c_bad, "int square(int s)", "total + square(3)", "square")
+
+    var z_good: str = "fn square(s: i64) i64 {\n    return s * s;\n}\n\npub fn main() u8 {\n    var total: i64 = 0;\n    total = total + square(3);\n    return @intCast(total);\n}\n"
+    var z_bad: str = "fn square(s: i64) i64 {\n    return s * s;\n}\n\npub fn main() u8 {\n    var total: i64 = 0;\n    total = total + square(3) BROKEN;\n    return @intCast(total);\n}\n"
+    var zargv: List(str) = List(str)()
+    zargv.add("zls")
+    var r2: str = exercise("zls", zargv, "zig", ws, "b.zig", z_good, z_bad, "fn square(s: i64)", "total + square(3)", "square")
+
+    var skipped: List(str) = List(str)()
+    var failed: List(str) = List(str)()
+    for r in [r1, r2]
+        if r == ""
+            continue
+        if r.startsWith("skipped")
+            skipped.add(r)
+        else
+            failed.add(r)
+    if failed.len > 0
+        print("cross_lsp_test: FAIL — " + failed.join(" || "))
+        sys.exit(1)
+    if skipped.len > 0
+        print("cross_lsp_test: " + skipped.join("; "))
+        return
+    print("cross_lsp_test: ok")

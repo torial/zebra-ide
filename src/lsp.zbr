@@ -113,8 +113,11 @@ class LspClient
         return .send("{\"jsonrpc\":\"2.0\",\"method\":\"" + method + "\",\"params\":" + params_json + "}")
 
     # ── Protocol helpers ─────────────────────────────────────────────────────
+    # Capabilities are declared minimally but deliberately: zls (0.16) PUSHES
+    # diagnostics only when the client declares `textDocument.publishDiagnostics`
+    # (found 09-08: without it, a broken file produced nothing at all).
     def initialize(root_uri: str): int
-        return .request("initialize", "{\"processId\":null,\"rootUri\":\"" + jsonEscape(root_uri) + "\",\"capabilities\":{}}")
+        return .request("initialize", "{\"processId\":null,\"rootUri\":\"" + jsonEscape(root_uri) + "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"synchronization\":{\"didSave\":true}}}}")
 
     def didOpen(uri: str, language_id: str, version: int, text: str): bool
         return .notify("textDocument/didOpen", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\",\"languageId\":\"" + language_id + "\",\"version\":" + version.toString() + ",\"text\":\"" + jsonEscape(text) + "\"}}")
@@ -143,8 +146,18 @@ class LspClient
     def documentSymbol(uri: str): int
         return .request("textDocument/documentSymbol", "{\"textDocument\":{\"uri\":\"" + jsonEscape(uri) + "\"}}")
 
+    # `shutdown` / `exit` carry NO params: zls rejects `"params":{}` with a
+    # ParseError and stops reading (09-08); `zebra lsp` and clangd accept either.
     def shutdown(): int
-        return .request("shutdown", "{}")
+        var id: int = .next_id
+        .next_id = .next_id + 1
+        if .send("{\"jsonrpc\":\"2.0\",\"id\":" + id.toString() + ",\"method\":\"shutdown\"}")
+            .pending.put(id, "shutdown")
+            return id
+        return 0
+
+    def exit(): bool
+        return .send("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
 
     # ── Receiving ────────────────────────────────────────────────────────────
     # Drain the pipe and file every complete frame. Returns how many messages arrived.
