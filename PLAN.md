@@ -329,3 +329,18 @@ landed as the DAILY gate `leakgen` and its first 3,000 programs found and fixed 
 zebra-language HEAD 3b7d1d3. The open worklist above minus BUG-356 and the fuzzer.
 
 Addendum 2026-09-09 (early morning): zebra-language 4882b1e — loop variables typed by the checker (root of BUG-362..366); BUG-336/339/354 fixed under the leakgen gate; BUG-367 (numeric-for bodies were unchecked). Still open in that class: BUG-337, BUG-338.
+
+Addendum 2026-09-09 (day): **tests.** Sean asked for "some form of automated testing
+mechanism". zebra-language d4e686c: `zebra test --list` (label<TAB>line, front end only, the
+harness's own rule) and `--only a,B.c`; the harness prints `RUN:` before each test and no
+longer fails to build on a test that raises nothing (BUG-368 — a plain-`assert` test was a
+void fn and the wrapper was a Zig compile error; only the assert_* family ever worked).
+zebra-ide 8e1a058: `src/tests.zbr` (pure: suite from --list, verdicts from the run —
+pass / fail / crash pinned on the RUN: line / not-run, jump lines, `--only` re-runs that keep
+the other verdicts), a Tests pane with Run tests / Re-run failed / Jump to test, **Run**
+(the current file, output in the gates pane), Ctrl+R / Ctrl+Shift+T / Ctrl+Shift+R, manifest
+`"tests": { "on_save": true }`. tests_test + model_test cover it headless; check.sh 15/15.
+Filed BUG-369 (an unknown method on `str`/`List` passes `-c` and fails in zig — the Check
+button's worst miss; recommended next compiler item). cli_check's direct-run-build-file leg
+was red on Linux against the 09-08 ZEBRA_COMPILER contract; re-pointed, refusal still pinned.
+zebra-language HEAD d4e686c, zebra-ide HEAD 8e1a058. Owed by Sean: unchanged.
