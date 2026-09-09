@@ -1,0 +1,81 @@
+# tests_test — the test runner headless against the real compiler: discovery through
+# `zebra test --list`, a run with a pass, a raising failure and a panicking one, the
+# statuses and jump lines that fall out, then a `--only` re-run of the failed subset.
+#   zebra src/tests_test.zbr       (ZEBRA_COMPILER must name the compiler)
+use tests exposing TestSuite, TestCase, parseListOutput, applyRunOutput, applyListFailure, renderSuite, summaryOf, listSpec, runSpec, failLineIn
+use gates exposing GateSpec, GateRun, runToEnd
+
+def main()
+    # ── pure parsing, no process ─────────────────────────────────────────────
+    var s0: TestSuite = parseListOutput("x/f.zbr", "test_a\t3\nnoise\nCls.test_b\t9\n")
+    assert s0.cases.len == 2 and s0.cases.at(0).label == "test_a" and s0.cases.at(0).line == 3
+    assert s0.cases.at(1).label == "Cls.test_b" and s0.cases.at(1).line == 9
+    assert failLineIn("assert failed at f.zbr:12", "x/f.zbr") == 12
+    assert failLineIn("assert_eq failed", "x/f.zbr") == 0
+    applyRunOutput(s0, "RUN: test_a\nPASS: test_a\nRUN: Cls.test_b\nthread 12 panic: assert failed at f.zbr:10\n", List(str)())
+    assert s0.cases.at(0).status == "pass"
+    assert s0.cases.at(1).status == "crash" and s0.cases.at(1).fail_line == 10, "crash pinned on the running test: " + s0.cases.at(1).status
+    assert s0.passed == 1 and s0.crashed == 1
+    assert s0.failedLabels().len == 1 and s0.failedLabels().at(0) == "Cls.test_b"
+    # a subset run leaves the others alone
+    var only: List(str) = List(str)()
+    only.add("Cls.test_b")
+    applyRunOutput(s0, "RUN: Cls.test_b\nPASS: Cls.test_b\n\n1 passed, 0 failed\n", only)
+    assert s0.cases.at(0).status == "pass" and s0.cases.at(1).status == "pass" and s0.passed == 2
+    assert s0.summary == "1 passed, 0 failed"
+    # a list refusal is a compile error, never "no tests"
+    var s1: TestSuite = parseListOutput("x/g.zbr", "")
+    applyListFailure(s1, "zebra test --list: g.zbr: g.zbr:3:5: error: unexpected member: 'static'\n")
+    assert s1.cases.len == 0 and s1.compile_error.contains("unexpected member")
+    assert summaryOf(s1) == "no tests ran"
+    var lines: List(str) = List(str)()
+    var jumps: List(int) = List(int)()
+    renderSuite(s0, lines, jumps)
+    assert lines.len == 4 and jumps.len == 4, "header + 2 tests + footer"
+    assert lines.at(1).contains("✓ test_a") and jumps.at(1) == 3
+    assert jumps.at(0) == 0 and jumps.at(3) == 0
+
+    # ── the real compiler ────────────────────────────────────────────────────
+    var zopt = sys.getenv("ZEBRA_COMPILER")
+    assert zopt != nil, "ZEBRA_COMPILER must be set"
+    var zebra: str = zopt!.replace("\\", "/")
+    Dir.createAll("tests_tmp")
+    File.write("tests_tmp/suite.zbr", "def test_ok()\n    assert_eq 1 + 1, 2\n\ndef test_raises()\n    assert_eq 1, 2\n\ndef helper(n: int): int\n    return n\n\ndef test_not_a_test(n: int)\n    pass\n\nclass K\n    static\n        def test_static_ok()\n            assert_true helper(1) == 1\n        def test_panics()\n            assert helper(1) == 2\n        def test_after()\n            assert_true true\n\ndef main()\n    print(\"suite\")\n")
+    var lst: GateRun = runToEnd(listSpec(zebra, "suite.zbr", "tests_tmp"))
+    assert lst.exit_code == 0, "--list failed: " + lst.output
+    var s: TestSuite = parseListOutput("tests_tmp/suite.zbr", lst.output)
+    assert s.cases.len == 5, "expected 5 runnable tests, got " + s.cases.len.toString() + ": " + lst.output
+    assert s.cases.at(0).label == "test_ok" and s.cases.at(0).line == 1
+    assert s.cases.at(1).label == "test_raises" and s.cases.at(1).line == 4
+    assert s.cases.at(2).label == "K.test_static_ok" and s.cases.at(3).label == "K.test_panics" and s.cases.at(4).label == "K.test_after"
+    assert s.find("test_not_a_test") < 0, "a def with a parameter is not a test"
+
+    var run: GateRun = runToEnd(runSpec(zebra, "suite.zbr", "tests_tmp", List(str)()))
+    assert run.exit_code != 0, "a panicking suite exits non-zero"
+    applyRunOutput(s, run.output, List(str)())
+    assert s.cases.at(0).status == "pass", "test_ok: " + s.cases.at(0).status
+    assert s.cases.at(1).status == "fail" and s.cases.at(1).message != "", "test_raises: " + s.cases.at(1).status
+    assert s.cases.at(2).status == "pass", "K.test_static_ok: " + s.cases.at(2).status
+    assert s.cases.at(3).status == "crash" and s.cases.at(3).fail_line == 18, "K.test_panics: " + s.cases.at(3).status + " line " + s.cases.at(3).fail_line.toString() + "\n" + run.output
+    assert s.cases.at(4).status == "not run", "K.test_after after the crash: " + s.cases.at(4).status
+    assert s.passed == 2 and s.failed == 1 and s.crashed == 1 and s.notRun() == 1
+    var fl: List(str) = s.failedLabels()
+    assert fl.len == 2 and fl.at(0) == "test_raises" and fl.at(1) == "K.test_panics"
+
+    # re-run only the raising failure: the rest keep their verdicts
+    var sub: List(str) = List(str)()
+    sub.add("test_raises")
+    var rerun: GateRun = runToEnd(runSpec(zebra, "suite.zbr", "tests_tmp", sub))
+    assert rerun.output.contains("RUN: test_raises") and not rerun.output.contains("RUN: test_ok"), "--only ran more than asked: " + rerun.output
+    applyRunOutput(s, rerun.output, sub)
+    assert s.cases.at(1).status == "fail" and s.cases.at(0).status == "pass" and s.cases.at(3).status == "crash"
+    assert s.summary == "0 passed, 1 failed", "summary: " + s.summary
+
+    # a file that does not parse: --list refuses, the suite says so
+    File.write("tests_tmp/broken.zbr", "def test_x()\n    var = \n")
+    var bl: GateRun = runToEnd(listSpec(zebra, "broken.zbr", "tests_tmp"))
+    assert bl.exit_code != 0
+    var sb2: TestSuite = parseListOutput("tests_tmp/broken.zbr", bl.output)
+    applyListFailure(sb2, bl.output)
+    assert sb2.cases.len == 0 and sb2.compile_error != "", "list refusal must surface: " + bl.output
+    print("tests_test: ok")

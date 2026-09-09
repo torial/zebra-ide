@@ -1,0 +1,277 @@
+# tests.zbr — the IDE's test runner, as data (2026-09-09, Sean: "some form of
+# automated testing mechanism").
+#
+# The compiler already owns test discovery and execution: `def test_*()` (top level, no
+# params) and class-static `test_*` run under `zebra test FILE`, printing one line per
+# test on stderr. This module never re-derives that rule — it asks the compiler:
+#
+#   zebra test --list FILE            label<TAB>line per test that WOULD run, no build
+#   zebra test [--only a,b] FILE      RUN: x / PASS: x / FAIL: x: msg …  "N passed, M failed"
+#
+# and turns the two outputs into a TestSuite the IDE renders and jumps from. Pure: no
+# Scintilla, no libui, no process — ide.zbr runs the two commands through GateRun (the
+# same non-blocking runner the gates use) and hands the output here; tests_test drives
+# it headless against the real compiler.
+#
+# What a run can look like, and what each shape means:
+#   PASS: t            → pass
+#   FAIL: t: message   → fail (the assert_* family raises; the run continues)
+#   RUN: t  … then a `thread N panic: assert failed at f.zbr:12` and NOTHING after it
+#                      → crash: a plain `assert` panics and ends the process; every test
+#                        after it is "not run". The RUN line (BUG-368) is what lets the
+#                        panic be pinned on the right test; the `at f.zbr:12` gives the
+#                        line to jump to.
+#   no PASS/FAIL/RUN for a listed test → not run (a compile failure, or after a crash)
+
+use gates exposing GateSpec
+
+# A class, not a struct: the suite mutates cases in place through the list, and a
+# struct element would be copied out by `for` / `.at()` and the edit lost.
+class TestCase
+    var label: str = ""     # as printed: `test_x` or `Cls.test_x`
+    var line: int = 0       # 1-based line of the `def`, from --list
+    var status: str = ""    # "pending" | "running" | "pass" | "fail" | "crash" | "not run"
+    var message: str = ""   # FAIL's message, or the panic text
+    var fail_line: int = 0  # 1-based line the failure named (`assert failed at f:NN`), else 0
+
+    cue init(label: str, line: int)
+        .label = label
+        .line = line
+        .status = "pending"
+
+class TestSuite
+    var file: str = ""
+    var cases: List(TestCase)
+    var passed: int = 0
+    var failed: int = 0
+    var crashed: int = 0
+    var compile_error: str = ""     # the run/list refused the file: the first diagnostic line
+    var summary: str = ""           # the compiler's own "N passed, M failed" when it printed one
+
+    cue init(file: str)
+        .file = file
+        .cases = List(TestCase)()
+
+    def find(label: str): int
+        var i: int = 0
+        while i < .cases.len
+            if .cases.at(i).label == label
+                return i
+            i = i + 1
+        return -1
+
+    def failedLabels(): List(str)
+        var out: List(str) = List(str)()
+        for c in .cases
+            if c.status == "fail" or c.status == "crash"
+                out.add(c.label)
+        return out
+
+    def notRun(): int
+        var n: int = 0
+        for c in .cases
+            if c.status == "not run" or c.status == "pending" or c.status == "running"
+                n = n + 1
+        return n
+
+# `label<TAB>line` per line; anything else (a diagnostic, chatter) is ignored — a
+# refusal is reported through applyListFailure so it is never mistaken for "no tests".
+def parseListOutput(file: str, out: str): TestSuite
+    var s = TestSuite(file)
+    for l in out.split("\n")
+        var t: str = l.trim()
+        var k: int = t.indexOf("\t")
+        if k > 0
+            var num: str = t[k+1..t.len].trim()
+            if isNum(num)
+                s.cases.add(TestCase(t[0..k], num.toInt()))
+    return s
+
+def isNum(s: str): bool
+    if s.len == 0
+        return false
+    var i: int = 0
+    while i < s.len
+        var c: str = s[i..i+1]
+        if c < "0" or c > "9"
+            return false
+        i = i + 1
+    return true
+
+# The line the failure named, from `assert failed at path:NN` or a `path:NN:` diagnostic
+# inside the message; 0 when it named none.
+def failLineIn(msg: str, file: str): int
+    var stem: str = baseOf(file)
+    var k: int = msg.indexOf(stem + ":")
+    if k < 0
+        return 0
+    var rest: str = msg[k + stem.len + 1..msg.len]
+    var e: int = 0
+    while e < rest.len and rest[e..e+1] >= "0" and rest[e..e+1] <= "9"
+        e = e + 1
+    if e == 0
+        return 0
+    return rest[0..e].toInt()
+
+def baseOf(p: str): str
+    var n: str = p.replace("\\", "/")
+    var i: int = n.lastIndexOf("/")
+    if i >= 0
+        return n[i+1..n.len]
+    return n
+
+# Fold a run's output (stdout+stderr, in order) into the suite. Idempotent per run:
+# call once with the whole output, after the process ended. Tests outside `ran`
+# (an --only subset) keep their previous status.
+def applyRunOutput(s: TestSuite, out: str, ran: List(str))
+    var running: int = -1
+    s.passed = 0
+    s.failed = 0
+    s.crashed = 0
+    s.summary = ""
+    s.compile_error = ""
+    var subset: bool = ran.len > 0
+    # reset the tests this run covers
+    for c in s.cases
+        if not subset or ran.contains(c.label)
+            c.status = "not run"
+            c.message = ""
+            c.fail_line = 0
+    for raw in out.split("\n")
+        var l: str = raw.trim()
+        if l.startsWith("RUN: ")
+            running = s.find(l[5..l.len])
+            if running >= 0
+                s.cases.at(running).status = "running"
+        else if l.startsWith("PASS: ")
+            var i: int = s.find(l[6..l.len])
+            if i >= 0
+                s.cases.at(i).status = "pass"
+            running = -1
+        else if l.startsWith("FAIL: ")
+            var body: str = l[6..l.len]
+            var label: str = body
+            var msg: str = ""
+            var k: int = body.indexOf(": ")
+            if k >= 0
+                label = body[0..k]
+                msg = body[k+2..body.len]
+            var i: int = s.find(label)
+            if i >= 0
+                s.cases.at(i).status = "fail"
+                s.cases.at(i).message = msg
+                s.cases.at(i).fail_line = failLineIn(msg, s.file)
+            running = -1
+        else if l.contains("panic: ")
+            var p: int = l.indexOf("panic: ")
+            var ptext: str = l[p+7..l.len]
+            if running >= 0
+                s.cases.at(running).status = "crash"
+                s.cases.at(running).message = ptext
+                s.cases.at(running).fail_line = failLineIn(ptext, s.file)
+                running = -1
+            else if s.compile_error == ""
+                s.compile_error = ptext
+        else if l.contains(" passed, ") and l.contains(" failed")
+            s.summary = l
+        else if s.compile_error == "" and (l.contains(": error: ") or l.startsWith("error:"))
+            s.compile_error = l
+    for c in s.cases
+        if c.status == "running"
+            c.status = "not run"      # the process ended without a verdict and without a panic line
+        if c.status == "pass"
+            s.passed = s.passed + 1
+        else if c.status == "fail"
+            s.failed = s.failed + 1
+        else if c.status == "crash"
+            s.crashed = s.crashed + 1
+
+# A re-listed suite (a `--only` re-run lists again, because the file may have been
+# edited and the lines moved) inherits the last verdicts for the labels it still has.
+def inheritVerdicts(fresh: TestSuite, old: TestSuite)
+    for c in fresh.cases
+        var i: int = old.find(c.label)
+        if i >= 0
+            var o: TestCase = old.cases.at(i)
+            c.status = o.status
+            c.message = o.message
+            c.fail_line = o.fail_line
+    fresh.passed = old.passed
+    fresh.failed = old.failed
+    fresh.crashed = old.crashed
+
+# `--list` refused the file (a parse error): keep the suite empty and say why.
+def applyListFailure(s: TestSuite, out: str)
+    for raw in out.split("\n")
+        var l: str = raw.trim()
+        if l.contains(": error: ") or l.startsWith("zebra test --list:")
+            s.compile_error = l
+            return
+    s.compile_error = out.trim()
+
+# One pane line per test, in run order, plus a header and a footer. `jumps` gets one
+# entry per line: the 1-based line to jump to (the test's def line, or the failure's
+# line when it named one), 0 for a line that is not a test.
+def renderSuite(s: TestSuite, lines: List(str), jumps: List(int))
+    lines.add("Tests: " + baseOf(s.file))
+    jumps.add(0)
+    if s.compile_error != ""
+        lines.add("   ✗ " + s.compile_error)
+        jumps.add(0)
+    for c in s.cases
+        var mark: str = "·"
+        if c.status == "pass"
+            mark = "✓"
+        else if c.status == "fail"
+            mark = "✗"
+        else if c.status == "crash"
+            mark = "✗!"
+        else if c.status == "running"
+            mark = "▶"
+        var text: str = "   " + mark + " " + c.label
+        var jump: int = c.line
+        if c.status == "fail" or c.status == "crash"
+            text = text + " — " + c.message
+            if c.fail_line > 0
+                jump = c.fail_line
+        else if c.status == "not run"
+            text = text + " (not run)"
+        lines.add(text)
+        jumps.add(jump)
+    lines.add("── " + summaryOf(s))
+    jumps.add(0)
+
+def summaryOf(s: TestSuite): str
+    if s.cases.len == 0
+        if s.compile_error != ""
+            return "no tests ran"
+        return "no tests in this file"
+    var t: str = s.passed.toString() + "/" + s.cases.len.toString() + " passed"
+    if s.failed > 0
+        t = t + ", " + s.failed.toString() + " failed"
+    if s.crashed > 0
+        t = t + ", " + s.crashed.toString() + " crashed (a plain `assert` panics — prefer assert_eq/assert_true in tests)"
+    var nr: int = s.notRun()
+    if nr > 0
+        t = t + ", " + nr.toString() + " not run"
+    return t
+
+# The two commands, as GateSpecs the IDE's runner takes. `cwd` is the file's directory
+# so `use` siblings resolve; the tag is what the IDE's poll loop keys on.
+def listSpec(compiler: str, file: str, cwd: str): GateSpec
+    var argv: List(str) = List(str)()
+    argv.add(compiler)
+    argv.add("test")
+    argv.add("--list")
+    argv.add(file)
+    return GateSpec(name: "tests --list", argv: argv, cwd: cwd, expect: "", skip: "", timeout_ms: 60000, tag: "tests:list")
+
+def runSpec(compiler: str, file: str, cwd: str, only: List(str)): GateSpec
+    var argv: List(str) = List(str)()
+    argv.add(compiler)
+    argv.add("test")
+    if only.len > 0
+        argv.add("--only")
+        argv.add(only.join(","))
+    argv.add(file)
+    return GateSpec(name: "tests", argv: argv, cwd: cwd, expect: "", skip: "", timeout_ms: 600000, tag: "tests:run")

@@ -56,6 +56,12 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
 5. **Build**, then **Run gates** → the pane fills, verdict lines appear, a failing gate's
    diagnostics are jumpable. (`zebra src\gates.zbr -- zebra-ide.json` is the same thing
    headless.)
+5b. Open a file with `def test_*()` functions (`src\tests_tmp\suite.zbr` after `check.sh`
+   has run, or write one: `assert_eq 1, 2` in a test) and press **Run tests** → the
+   Tests pane lists every test with ✓ / ✗ and the failure message, the status line says
+   `N/M passed`; put the caret on a ✗ line and **Jump to test** lands on the failing
+   assert; **Re-run failed** runs only those (`zebra test --only …`). **Run** (Ctrl+R)
+   runs the current file and shows its output in the gates pane.
 6. Put the caret on a line in a small program and press **Breakpoint** or F9 (the
    margin click and F9 need the bridge from step 3), then **Debug** or F5 → yellow
    arrow on that line, frames in the debugger pane; Next
@@ -78,10 +84,11 @@ window itself has none and has never been opened.
 | `src/transport.zbr` | Content-Length framing over `sys.spawnPiped`, shared by both | via the two above |
 | `src/buffers.zbr` | open documents: paths, Scintilla document pointers, saved view state | `buffers_test.zbr` |
 | `src/gates.zbr` | project manifest (gates + tools) + non-blocking runner + diagnostic parser; CLI | `gates_test.zbr`, `tools_test.zbr` |
+| `src/tests.zbr` | the test runner as data: `zebra test --list` → suite, run output → ✓/✗/crash/not-run per test with jump lines, `--only` re-runs; pure | `tests_test.zbr` vs the real compiler; the Model path in `model_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
 | `src/keys.zbr` | the shortcut table (chord → action), pure | `keys_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 14 steps | — |
+| `tools/check.sh` | the gate: all of the above, 15 steps | — |
 
 ## Known limits (stated, not hidden)
 
@@ -90,9 +97,10 @@ window itself has none and has never been opened.
   emitting, so closed tabs disappear). A real `uiTab` strip is still not used —
   libui-ng cannot relabel a page and the row is the honest version of that.
 - Keyboard shortcuts (09-08, needs the zig-libui-ng key shim → the pin bump): Ctrl+S
-  save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, F5 debug /
-  continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11 step out,
-  F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks
+  save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, Ctrl+R run
+  the current file, Ctrl+Shift+T run its tests, Ctrl+Shift+R re-run the failed ones,
+  F5 debug / continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11
+  step out, F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks
   it claims nothing Scintilla owns — Ctrl+C/V/X/Z/Y/A stay the editor's). Until the
   pin moves, the chords are inert and the buttons do everything.
 - Variables: when the program stops, the debugger pane shows the top frame's scopes
@@ -128,3 +136,13 @@ window itself has none and has never been opened.
   run found two compiler bugs, BUG-352/353, and the open-documents-only server.)
 - A gate that cannot run here (no lldb-dap) reports **SKIP**, not PASS — in the pane,
   in `gates.zbr`, and in `check.sh`.
+- **Tests (09-09):** Run tests / Re-run failed / Jump to test, on the current file.
+  Discovery is the compiler's (`zebra test --list`: `def test_*()` with no params, and
+  class-static `test_*`; a `def test_x(n)` is not a test and is not listed), the run is
+  `zebra test [--only …]`, both queued through the gate runner so they never overlap a
+  build. Per test: ✓ pass, ✗ fail with the message (the `assert_*` family raises and
+  the run continues), ✗! crash — a plain `assert` PANICS, the process ends there and
+  everything after it is "not run"; the compiler's `RUN:` line pins the panic on the
+  right test and `assert failed at f.zbr:NN` gives the jump line. Prefer `assert_eq` /
+  `assert_true` in tests. `"tests": { "on_save": true }` in the manifest runs the saved
+  file's tests on every Ctrl+S. Only `.zbr` files; a file with no tests says so.

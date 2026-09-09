@@ -5,6 +5,9 @@
 #   3. textops_test      applyEdits / symbolLines / auto-indent, pure (headless)
 #   3a. keys_test        the shortcut table: no duplicate chords, Scintilla's own keys unclaimed
 #   3b. gates_test       manifest + runner vs the real compiler (headless)
+#   3b'. tests_test      the test runner vs the real compiler: `zebra test --list`
+#                        discovery, pass / raising fail / panicking crash / not-run
+#                        statuses and jump lines, a `--only` re-run (headless)
 #   3c. tools_test       process plugins: manifest `tools`, ${file}/${word} substitution, a real
 #                        `zig fmt` reformat, a diagnostic-emitting tool, an on:save hook
 #   3d. model_test       the IDE's Model driven headless on the tui backend: save-before-run,
@@ -36,6 +39,7 @@ step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | gr
 # backend — on tui the stub. Refuter, 09-08: run headless it did not even compile.
 step "keys_test (tui)"; (cd src && rm -rf keys_test_gui_tui && "$ZEBRA" --gui-backend=tui keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "tests_test";      (cd src && rm -rf tests_tmp && "$ZEBRA" tests_test.zbr 2>&1 | tail -1 | grep -q "tests_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep -q "tools_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "model_test (tui, headless Model)"; (cd src && rm -rf model_test_gui_tui && "$ZEBRA" --gui-backend=tui model_test.zbr 2>&1 | tail -1 | grep -q "model_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "dap_client_test"

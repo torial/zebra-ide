@@ -4,7 +4,7 @@
 # one tool, hooks through the queue (refuter, 2026-09-08: "a headless Model harness
 # would have caught the two name-keyed-map defects without a window").
 #   zebra --gui-backend=tui src/model_test.zbr
-use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText, editorOf
+use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText, editorOf, startTests
 use keys exposing registerShortcuts, argCount
 use gates exposing ToolSpec, Manifest, loadManifest
 
@@ -102,4 +102,39 @@ def main()
     assert editorText(m).contains("const z = 3;"), "f was not reloaded with its own formatted text: " + editorText(m)
     assert openFile(m, g), "back to g"
     assert editorText(m).contains("const y = 2;"), "g was not reloaded with its own formatted text: " + editorText(m)
+
+    # 6. tests through the Model (2026-09-09): Run tests = --list then test, queued; the
+    #    UNSAVED editor text is what runs; the pane is structured; re-run failed is a
+    #    --only subset that leaves the other verdicts alone
+    var tf: str = ws + "/t_suite.zbr"
+    File.write(tf, "def main()\n    pass\n")
+    assert openFile(m, tf), "open suite"
+    setEditorText(m, "def test_one()\n    assert_eq 1, 1\n\ndef test_two()\n    assert_eq 1, 2\n\ndef main()\n    pass\n")
+    var m3: Model = update(m, Msg.run_tests)
+    assert m3 == m
+    assert m.run != nil, "the --list should be running"
+    drain(m)
+    assert m.tests != nil, "no suite"
+    var st = m.tests!
+    assert st.cases.len == 2, "expected 2 tests, got " + st.cases.len.toString() + " pane=" + m.tests_lines.join("|")
+    assert st.cases.at(0).status == "pass" and st.cases.at(1).status == "fail", st.cases.at(0).status + "/" + st.cases.at(1).status
+    assert m.tests_lines.len == 4 and m.tests_lines.at(2).contains("✗ test_two"), m.tests_lines.join("|")
+    assert m.tests_jumps.at(1) == 1 and m.tests_jumps.at(2) == 4, "jump lines"
+    assert m.status.contains("1/2 passed, 1 failed"), m.status
+    # a file with no tests says so and runs nothing
+    var m4: Model = update(m, Msg.rerun_failed_tests)
+    assert m4 == m and m.run != nil, "re-run failed should queue a --list"
+    drain(m)
+    assert m.tests!.cases.at(0).status == "pass" and m.tests!.cases.at(1).status == "fail", "a --only re-run must keep the other verdicts: " + m.tests!.cases.at(0).status
+    assert paneText(m).contains("--only test_two") and not paneText(m).contains("RUN: test_one"), "re-run must be a --only subset: " + paneText(m)
+    setEditorText(m, "def main()\n    pass\n")
+    startTests(m, List(str)())
+    drain(m)
+    assert m.tests!.cases.len == 0 and m.status.contains("no tests in this file"), m.status
+    # Run (Ctrl+R): the program's own output in the gates pane
+    setEditorText(m, "def main()\n    print(\"ran-from-ide\")\n")
+    var m5: Model = update(m, Msg.run_file)
+    assert m5 == m and m.run != nil
+    drain(m)
+    assert paneText(m).contains("ran-from-ide"), "run output missing: " + paneText(m)
     print("model_test: ok")

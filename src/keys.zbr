@@ -35,6 +35,9 @@ def shortcutList(): List(Shortcut)
     out.add(Shortcut(vk: 0x46, mods: KEY_CTRL, action: "find", label: "Ctrl+F"))
     out.add(Shortcut(vk: 0x42, mods: KEY_CTRL, action: "build", label: "Ctrl+B"))
     out.add(Shortcut(vk: 0x42, mods: KEY_CTRL + KEY_SHIFT, action: "gates", label: "Ctrl+Shift+B"))
+    out.add(Shortcut(vk: 0x52, mods: KEY_CTRL, action: "run", label: "Ctrl+R"))                      # run the current file
+    out.add(Shortcut(vk: 0x54, mods: KEY_CTRL + KEY_SHIFT, action: "tests", label: "Ctrl+Shift+T"))  # Ctrl+T is Scintilla's line-transpose
+    out.add(Shortcut(vk: 0x52, mods: KEY_CTRL + KEY_SHIFT, action: "rerun_failed", label: "Ctrl+Shift+R"))
     out.add(Shortcut(vk: VK_F5, mods: 0, action: "debug", label: "F5"))            # continue while debugging
     out.add(Shortcut(vk: VK_F5, mods: KEY_SHIFT, action: "stop", label: "Shift+F5"))
     out.add(Shortcut(vk: VK_F9, mods: 0, action: "breakpoint", label: "F9"))

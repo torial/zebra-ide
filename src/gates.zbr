@@ -72,6 +72,7 @@ class Manifest
     var build: GateSpec? = nil
     var gates: List(GateSpec)
     var tools: List(ToolSpec)
+    var tests_on_save: bool = false   # "tests": { "on_save": true } — run the saved file's tests
 
     cue init()
         .gates = List(GateSpec)()
@@ -262,6 +263,10 @@ def loadManifest(path: str): Manifest?
     if not j.at("tools").isNull()
         for t in j.getList("tools")
             m.tools.add(toolFrom(t, m.root))
+    if not j.at("tests").isNull()
+        var tj: JsonValue = j.getObj("tests")
+        if not tj.at("on_save").isNull()
+            m.tests_on_save = tj.getBool("on_save")
     return m
 
 # ── Diagnostic lines ─────────────────────────────────────────────────────────

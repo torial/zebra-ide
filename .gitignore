@@ -7,3 +7,6 @@
 src/*_gui_tui/
 src/*_gui_libui_ng/
 src/*.zig
+src/gates_tmp/
+src/tests_tmp/
+src/dap_tmp/

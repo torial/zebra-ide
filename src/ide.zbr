@@ -37,7 +37,8 @@
 
 use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
 use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName
-use gates exposing Manifest, GateSpec, GateRun, Diag, ToolSpec, loadManifest, joinPath, expandTool, toolUsesFile
+use gates exposing Manifest, GateSpec, GateRun, Diag, ToolSpec, loadManifest, joinPath, expandTool, toolUsesFile, dirOf
+use tests exposing TestSuite, parseListOutput, applyRunOutput, applyListFailure, renderSuite, summaryOf, listSpec, runSpec, inheritVerdicts
 use dap exposing DapClient, DapFrame, DapVar, DapScope
 use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener, wordAt
 use keys exposing shortcutAction, shortcutList, Shortcut, registerShortcuts
@@ -98,6 +99,13 @@ class Model
     var gates_failed: int = 0
     var gates_done: int = 0
     var gates_skipped: int = 0
+    # tests (tests.zbr): the suite for one file, its pane, and the pane's line → source
+    # line map ("Jump to test"); a run is two queued GateRuns (--list, then test)
+    var tests: TestSuite? = nil
+    var tests_pane: CodeEditor? = nil
+    var tests_lines: List(str)
+    var tests_jumps: List(int)
+    var tests_only: List(str)            # the subset the queued run covers ("" = all)
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
     var dbg: DapClient? = nil
     var dbg_pane: CodeEditor? = nil
@@ -124,6 +132,9 @@ class Model
         .dbg_var_req = HashMap(int, str)()
         .tool_reload = HashMap(str, str)()
         .tool_nodiags = HashMap(str, bool)()
+        .tests_lines = List(str)()
+        .tests_jumps = List(int)()
+        .tests_only = List(str)()
 
 union Msg
     tick
@@ -155,6 +166,10 @@ union Msg
     run_tool: int
     replace_one
     replace_all
+    run_file            # `zebra <current file>`, output in the gates pane (Ctrl+R)
+    run_tests           # `zebra test` on the current file, structured in the tests pane
+    rerun_failed_tests  # `zebra test --only <the failed ones>`
+    jump_test
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def cursorLine(ed: CodeEditor): int
@@ -426,6 +441,12 @@ def shortcutMsg(k: int, debugging: bool): Msg?
         return Msg.build
     if a == "gates"
         return Msg.run_gates
+    if a == "run"
+        return Msg.run_file
+    if a == "tests"
+        return Msg.run_tests
+    if a == "rerun_failed"
+        return Msg.rerun_failed_tests
     if a == "debug"
         return Msg.debug_start
     if a == "continue"
@@ -462,6 +483,9 @@ def ideInit(): Model
     m.dbg_pane = CodeEditor.forFile("debug.txt")
     m.dbg_pane!.setReadOnly(true)
     m.dbg_pane!.setText("(debugger: click the margin for a breakpoint, then Debug)")
+    m.tests_pane = CodeEditor.forFile("tests.txt")
+    m.tests_pane!.setReadOnly(true)
+    m.tests_pane!.setText("(Run tests: every def test_*() in the current file, via `zebra test`)")
     loadProject(m)
     startLsp(m)
     for p in startup_files
@@ -698,6 +722,10 @@ def pollGates(m: Model)
                 markBuildDiags(m, r.diags)
             else
                 m.tool_nodiags.remove(r.spec.tag)
+            if r.spec.tag == "tests:list"
+                testsListDone(m, r)
+            else if r.spec.tag == "tests:run"
+                testsRunDone(m, r)
             if m.tool_reload.get(r.spec.tag) as rp
                 m.tool_reload.remove(r.spec.tag)
                 if r.exit_code == 0
@@ -715,6 +743,96 @@ def pollGates(m: Model)
         else
             # live tail while it runs: keep the pane's last line as a heartbeat
             m.status = "running " + r.spec.name + " … " + (r.elapsed_ms / 1000).toString() + " s"
+
+# ── Tests (tests.zbr) ──────────────────────────────────────────────────────────
+# Two queued runs: `zebra test --list FILE` (front end only, ~60 ms) builds the suite
+# from the compiler's own discovery rule, then `zebra test [--only …] FILE` runs it;
+# both go through the gates queue, so they never overlap a build and their raw output
+# lands in the gates pane like any tool's. The tests pane holds the structured view.
+def testsRefresh(m: Model)
+    m.tests_lines = List(str)()
+    m.tests_jumps = List(int)()
+    if m.tests as t
+        renderSuite(t, m.tests_lines, m.tests_jumps)
+        m.status = "tests: " + summaryOf(t)
+    var sb = StringBuilder()
+    for l in m.tests_lines
+        sb.append(l + "\n")
+    m.tests_pane!.setReadOnly(false)
+    m.tests_pane!.setText(sb.build())
+    m.tests_pane!.setReadOnly(true)
+
+# Save first when dirty (the compiler reads the disk), then queue the --list.
+def startTests(m: Model, only: List(str))
+    if m.run != nil
+        m.status = "a gate is still running"
+        return
+    if m.bufs.cur() as b
+        if not b.path.endsWith(".zbr")
+            m.status = "tests: " + baseName(b.path) + " is not a Zebra file"
+            return
+        var text: str = m.editor!.getText()
+        var dirty: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+        if not dirty and File.exists(b.path)
+            dirty = text != File.read(b.path)
+        if dirty
+            File.write(b.path, text)
+            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+        var keep: bool = false
+        if m.tests as prev
+            keep = only.len > 0 and prev.file == b.path
+        if not keep
+            m.tests = TestSuite(b.path)
+        m.tests_only = only
+        var spec: GateSpec = listSpec(compilerPath(), baseName(b.path), dirOf(b.path))
+        m.tool_nodiags.put(spec.tag, true)       # a --list refusal is reported in the tests pane, not as markers
+        paneClear(m)
+        m.queue.add(spec)
+        startNextGate(m)
+        testsRefresh(m)
+    else
+        m.status = "tests: no file open"
+
+def testsListDone(m: Model, r: GateRun)
+    if m.tests as t
+        if r.exit_code == 0
+            var fresh: TestSuite = parseListOutput(t.file, r.output)
+            if m.tests_only.len > 0
+                inheritVerdicts(fresh, t)
+            m.tests = fresh
+            if fresh.cases.len > 0
+                m.queue.add(runSpec(compilerPath(), baseName(t.file), dirOf(t.file), m.tests_only))
+        else
+            applyListFailure(t, r.output)
+        testsRefresh(m)
+
+def testsRunDone(m: Model, r: GateRun)
+    if m.tests as t
+        applyRunOutput(t, r.output, m.tests_only)
+        testsRefresh(m)
+
+# `zebra FILE` on the current buffer: save when dirty, run in the file's directory,
+# output (and any compile diagnostics, marked) in the gates pane.
+def runCurrentFile(m: Model)
+    if m.run != nil
+        m.status = "a gate is still running"
+        return
+    if m.bufs.cur() as b
+        var text: str = m.editor!.getText()
+        var dirty: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+        if not dirty and File.exists(b.path)
+            dirty = text != File.read(b.path)
+        if dirty
+            File.write(b.path, text)
+            m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
+        var argv: List(str) = List(str)()
+        argv.add(compilerPath())
+        argv.add(baseName(b.path))
+        paneClear(m)
+        m.queue.add(GateSpec(name: "run " + baseName(b.path), argv: argv, cwd: dirOf(b.path), expect: "", skip: "", timeout_ms: 600000, tag: "run:file"))
+        startNextGate(m)
+    else
+        m.status = "run: no file open"
 
 # For headless tests (model_test): a CodeEditor cannot cross a module boundary
 # (BUG-355), but its text can.
@@ -1114,6 +1232,9 @@ def update(m: Model, msg: Msg): Model
                 m.editor!.sci(SCI_SETSAVEPOINT, 0, 0)
                 m.status = "saved " + baseName(sb.path)
                 runHooks(m, "save")
+                if m.manifest as mfs
+                    if mfs.tests_on_save and sb.path.endsWith(".zbr") and m.run == nil
+                        startTests(m, List(str)())
             else
                 m.status = "nothing to save"
             return m
@@ -1233,6 +1354,29 @@ def update(m: Model, msg: Msg): Model
         on Msg.replace_all
             replaceAll(m)
             return m
+        on Msg.run_file
+            runCurrentFile(m)
+            return m
+        on Msg.run_tests
+            startTests(m, List(str)())
+            return m
+        on Msg.rerun_failed_tests
+            if m.tests as t
+                var fl: List(str) = t.failedLabels()
+                if fl.len == 0
+                    m.status = "tests: nothing failed in the last run"
+                else
+                    startTests(m, fl)
+            else
+                m.status = "tests: run them first"
+            return m
+        on Msg.jump_test
+            var ti: int = cursorLine(m.tests_pane!)
+            if m.tests as t
+                if ti < m.tests_jumps.len and m.tests_jumps.at(ti) > 0
+                    if openFile(m, t.file)
+                        gotoLineCol(m.editor!, m.tests_jumps.at(ti) - 1, 0)
+            return m
         on Msg.jump_diag
             var i: int = cursorLine(m.gate_pane!)
             if i < m.pane_diag_idx.len and m.pane_diag_idx.at(i) >= 0
@@ -1333,6 +1477,12 @@ def view(g: Gui, m: Model)
                 g.send(Msg.build)
             if g.button("Run gates")
                 g.send(Msg.run_gates)
+            if g.button("Run")
+                g.send(Msg.run_file)
+            if g.button("Run tests")
+                g.send(Msg.run_tests)
+            if g.button("Re-run failed")
+                g.send(Msg.rerun_failed_tests)
             if g.button("Reload project")
                 g.send(Msg.reload_manifest)
             # Tools row: the manifest's process plugins (buttons; hooks run on save/open)
@@ -1401,6 +1551,11 @@ def view(g: Gui, m: Model)
                 m.gate_pane!.render(g, "##gates", 0, 0)
                 if g.button("Jump to diagnostic")
                     g.send(Msg.jump_diag)
+            using g.vbox("##testsbox", true)
+                g.text("Tests")
+                m.tests_pane!.render(g, "##tests", 0, 0)
+                if g.button("Jump to test")
+                    g.send(Msg.jump_test)
             using g.vbox("##dbgbox", true)
                 g.text("Debugger")
                 m.dbg_pane!.render(g, "##dbg", 0, 0)

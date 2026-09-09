@@ -13,6 +13,7 @@
     { "name": "tools_test",      "cmd": ["zebra", "tools_test.zbr"],      "cwd": "src", "expect": "tools_test: ok" },
     { "name": "model_test",      "cmd": ["zebra", "--gui-backend=tui", "model_test.zbr"], "cwd": "src", "expect": "model_test: ok", "timeout_ms": 300000 },
     { "name": "gates_test",      "cmd": ["zebra", "gates_test.zbr"],      "cwd": "src", "expect": "gates_test: ok", "timeout_ms": 300000 },
+    { "name": "tests_test",      "cmd": ["zebra", "tests_test.zbr"],      "cwd": "src", "expect": "tests_test: ok", "timeout_ms": 300000 },
     { "name": "dap_client_test", "cmd": ["zebra", "dap_client_test.zbr"], "cwd": "src", "expect": "dap_client_test: ok", "skip": "dap_client_test: skipped", "timeout_ms": 600000 },
     { "name": "lsp_client_test", "cmd": ["zebra", "lsp_client_test.zbr"], "cwd": "src", "expect": "lsp_client_test: ok", "timeout_ms": 300000 },
     { "name": "rename_workspace_test", "cmd": ["zebra", "rename_workspace_test.zbr"], "cwd": "src", "expect": "rename_workspace_test: ok", "timeout_ms": 300000 },
