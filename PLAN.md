@@ -300,3 +300,25 @@ builds: one section / one preamble per project, not per module), BUG-354; `zebra
 dependents beyond one directory; plugins (DynLib + gate manifest is the intended route);
 Haiku; `--listen` (deprecate or port — see above); win_sema_check GUI case. Do not "fix" the @hasDecl guards or the old pin — they are
 waiting on the push above, not on code.
+
+## Status 2026-09-09 (supersedes the open worklist above)
+
+Landed: **BUG-355/357 FIXED** — a GUI build now shares ONE `zebra_rt.zig` (preamble + the
+pub-marked GUI section) per project, exactly like the non-GUI shape; `keys.registerShortcuts`
+and `keys.argCount()` in `model_test` are the witnesses, and `nm` on the binary shows a single
+`zebra_rt._allocator/_args/_tui_env` (refuter's control). The refuter's round is fully
+answered in `.claude/crew/LOG.md` (chair's response, 09-09). Out of it: **BUG-358** (an MVU
+`view()` with `g.panel(...)` died on frame 65 — fixed in codegen; not something ide.zbr uses,
+but the first thing a panel-based layout would have hit) and **BUG-359** (a local named
+`_allocator`/`_args`/… was rewritten into the runtime's global — the checker refuses it now).
+
+Gate state (Linux, this compiler): selfhost_smoke 415/415, round trip clean, compile_check
+315/0, libui section 5/5 on old and new bindings, win_sema 4/4, runtime-module all pass,
+gui-scaffold clean on counter AND panel_smoke, zebra-ide check.sh 14/14.
+
+Owed by Sean: unchanged (items 1–5 above). Note `--daily` is 44 gates now.
+
+Open worklist, in order: **BUG-356** (shared-library round trip: fat pointer garbage across
+the boundary; add `--shared`; flip the pinned gate green — then DLL plugins); a grammar fuzzer
+for the "Zebra accepts, Zig rejects" class; BUG-354; the `.@"fn"`-twin lint (owed to the
+refuter); `zebra lsp` dependents beyond one directory; `--listen`; Haiku.
