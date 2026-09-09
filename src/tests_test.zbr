@@ -1,6 +1,8 @@
 # tests_test — the test runner headless against the real compiler: discovery through
-# `zebra test --list`, a run with a pass, a raising failure and a panicking one, the
-# statuses and jump lines that fall out, then a `--only` re-run of the failed subset.
+# `zebra test --list`, a run with a pass, a raising failure and a plain-`assert` failure
+# (a verdict with a location since zebra-language BUG-386; the CRASH path -- a genuine
+# panic mid-run -- is exercised on the synthetic output below), the statuses and jump
+# lines that fall out, then a `--only` re-run of the failed subset.
 #   zebra src/tests_test.zbr       (ZEBRA_COMPILER must name the compiler)
 use tests exposing TestSuite, TestCase, parseListOutput, applyRunOutput, applyListFailure, renderSuite, summaryOf, listSpec, runSpec, failLineIn
 use gates exposing GateSpec, GateRun, runToEnd
@@ -51,14 +53,18 @@ def main()
     assert s.find("test_not_a_test") < 0, "a def with a parameter is not a test"
 
     var run: GateRun = runToEnd(runSpec(zebra, "suite.zbr", "tests_tmp", List(str)()))
-    assert run.exit_code != 0, "a panicking suite exits non-zero"
+    assert run.exit_code != 0, "a failing suite exits non-zero"
     applyRunOutput(s, run.output, List(str)())
     assert s.cases.at(0).status == "pass", "test_ok: " + s.cases.at(0).status
     assert s.cases.at(1).status == "fail" and s.cases.at(1).message != "", "test_raises: " + s.cases.at(1).status
     assert s.cases.at(2).status == "pass", "K.test_static_ok: " + s.cases.at(2).status
-    assert s.cases.at(3).status == "crash" and s.cases.at(3).fail_line == 18, "K.test_panics: " + s.cases.at(3).status + " line " + s.cases.at(3).fail_line.toString() + "\n" + run.output
-    assert s.cases.at(4).status == "not run", "K.test_after after the crash: " + s.cases.at(4).status
-    assert s.passed == 2 and s.failed == 1 and s.crashed == 1 and s.notRun() == 1
+    # BUG-386 (zebra-language): a plain `assert` in a test is a FAIL verdict carrying
+    # `assert failed at suite.zbr:18`, so the jump line comes from the FAIL line and the
+    # tests after it run. Before, this was a process panic: status "crash", later tests
+    # "not run".
+    assert s.cases.at(3).status == "fail" and s.cases.at(3).fail_line == 18, "K.test_panics: " + s.cases.at(3).status + " line " + s.cases.at(3).fail_line.toString() + "\n" + run.output
+    assert s.cases.at(4).status == "pass", "K.test_after after the assert failure: " + s.cases.at(4).status
+    assert s.passed == 3 and s.failed == 2 and s.crashed == 0 and s.notRun() == 0
     var fl: List(str) = s.failedLabels()
     assert fl.len == 2 and fl.at(0) == "test_raises" and fl.at(1) == "K.test_panics"
 
@@ -68,7 +74,7 @@ def main()
     var rerun: GateRun = runToEnd(runSpec(zebra, "suite.zbr", "tests_tmp", sub))
     assert rerun.output.contains("RUN: test_raises") and not rerun.output.contains("RUN: test_ok"), "--only ran more than asked: " + rerun.output
     applyRunOutput(s, rerun.output, sub)
-    assert s.cases.at(1).status == "fail" and s.cases.at(0).status == "pass" and s.cases.at(3).status == "crash"
+    assert s.cases.at(1).status == "fail" and s.cases.at(0).status == "pass" and s.cases.at(3).status == "fail"
     assert s.summary == "0 passed, 1 failed", "summary: " + s.summary
 
     # a file that does not parse: --list refuses, the suite says so
