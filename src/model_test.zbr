@@ -4,7 +4,8 @@
 # one tool, hooks through the queue (refuter, 2026-09-08: "a headless Model harness
 # would have caught the two name-keyed-map defects without a window").
 #   zebra --gui-backend=tui src/model_test.zbr
-use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText
+use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText, editorOf
+use keys exposing registerShortcuts, argCount
 use gates exposing ToolSpec, Manifest, loadManifest
 
 def drain(m: Model)
@@ -36,6 +37,13 @@ def main()
   ] }""")
 
     var m: Model = ideInit()
+    # BUG-355/357 witnesses: the IDE's editor handed to a function in a third module,
+    # and sys.args() read from a `use`d module
+    registerShortcuts(editorOf(m))
+    assert argCount() >= 1, "sys.args() in a used module read nothing"
+    var ed: CodeEditor = editorOf(m)
+    ed.setText("via the editor object across modules")
+    assert editorText(m) == "via the editor object across modules"
     m.manifest = loadManifest(ws + "/zebra-ide.json")
     assert m.manifest != nil, "manifest"
     assert openFile(m, f), "open"

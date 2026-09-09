@@ -45,8 +45,19 @@ def shortcutList(): List(Shortcut)
     out.add(Shortcut(vk: VK_F12, mods: KEY_SHIFT, action: "references", label: "Shift+F12"))
     return out
 
-# (registerShortcuts lives in ide.zbr: a CodeEditor cannot cross a module boundary —
-# each module's emitted Zig carries its own GUI section type; BUG-355.)
+# A CodeEditor crosses the module boundary here: BUG-355 (one GUI section per
+# module) is fixed since 2026-09-08 — a GUI project shares one runtime and one
+# section — and this function is its witness (model_test calls it from a third
+# module with the IDE's editor).
+def registerShortcuts(ed: CodeEditor)
+    for sc in shortcutList()
+        ed.hotkey(sc.vk, sc.mods)
+
+# sys.args() from a `use`d module: BUG-357's witness (per-module preamble globals
+# used to leave `_args` uninitialised here and panic "sys.args OOM").
+def argCount(): int
+    var a: List(str) = sys.args()
+    return a.len
 
 # The action for a chord as takeKey() reports it ((mods << 16) | vk), or "".
 # F5 is "debug" when no session runs and "continue" when one does.

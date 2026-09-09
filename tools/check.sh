@@ -32,7 +32,9 @@ step() { echo "── $1"; }
 step "sci_test";        (cd src && "$ZEBRA" sci_test.zbr 2>&1 | tail -1 | grep -q "sci_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "buffers_test";    (cd src && "$ZEBRA" buffers_test.zbr 2>&1 | tail -1 | grep -q "buffers_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | grep -q "textops_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "keys_test";       (cd src && "$ZEBRA" keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
+# keys.zbr names CodeEditor (registerShortcuts, the BUG-355 witness), so it needs a GUI
+# backend — on tui the stub. Refuter, 09-08: run headless it did not even compile.
+step "keys_test (tui)"; (cd src && rm -rf keys_test_gui_tui && "$ZEBRA" --gui-backend=tui keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep -q "tools_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "model_test (tui, headless Model)"; (cd src && rm -rf model_test_gui_tui && "$ZEBRA" --gui-backend=tui model_test.zbr 2>&1 | tail -1 | grep -q "model_test: ok") && echo PASS || { echo FAIL; fail=1; }
@@ -53,12 +55,14 @@ case "$cross_out" in
   *) echo "FAIL ($cross_out)"; fail=1 ;;
 esac
 step "ide.zbr (tui, compile only)"
-(cd src && rm -rf ide_gui_tui && "$ZEBRA" -c --check-full --gui-backend=tui ide.zbr >/dev/null 2>&1; [ -f ide_gui_tui/zig-out/bin/app ] || [ -f ide_gui_tui/zig-out/bin/app.exe ]) && echo PASS || { echo FAIL; fail=1; }
+# `--output-dir .`: without it the scaffold lands in the TEMP dir (TEMP on Windows; /tmp on
+# POSIX since 09-09 — it only ever appeared beside the source on Linux because TEMP was unset)
+(cd src && rm -rf ide_gui_tui && "$ZEBRA" -c --check-full --gui-backend=tui --output-dir . ide.zbr >/dev/null 2>&1; [ -f ide_gui_tui/zig-out/bin/app ] || [ -f ide_gui_tui/zig-out/bin/app.exe ]) && echo PASS || { echo FAIL; fail=1; }
 B=${LIBUI_BINDINGS:-}
 if [ -z "$B" ]; then for c in /home/claude/libui-bindings /c/Projects/zig-libui-ng/src; do [ -f "$c/ui.zig" ] && B=$c; done; fi
 if [ -n "$B" ]; then
   step "ide.zbr (libui_ng, sema vs $B)"
-  (cd src && rm -rf ide_gui_libui_ng && "$ZEBRA" --gui-backend=libui_ng ide.zbr >/dev/null 2>&1; cd ide_gui_libui_ng && zig build-obj -target x86_64-windows-gnu -fno-emit-bin --dep ui --dep sci -Mroot=src/main.zig --dep ui -Msci="$B/sci.zig" -Mui="$B/ui.zig") && echo PASS || { echo FAIL; fail=1; }
+  (cd src && rm -rf ide_gui_libui_ng && "$ZEBRA" --gui-backend=libui_ng --output-dir . ide.zbr >/dev/null 2>&1; cd ide_gui_libui_ng && zig build-obj -target x86_64-windows-gnu -fno-emit-bin --dep ui --dep sci -Mroot=src/main.zig --dep ui -Msci="$B/sci.zig" -Mui="$B/ui.zig") && echo PASS || { echo FAIL; fail=1; }
 else
   step "libui sema: skipped (set LIBUI_BINDINGS)"
 fi
