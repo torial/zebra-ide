@@ -344,3 +344,21 @@ Filed BUG-369 (an unknown method on `str`/`List` passes `-c` and fails in zig �
 button's worst miss; recommended next compiler item). cli_check's direct-run-build-file leg
 was red on Linux against the 09-08 ZEBRA_COMPILER contract; re-pointed, refusal still pinned.
 zebra-language HEAD d4e686c, zebra-ide HEAD 8e1a058. Owed by Sean: unchanged.
+
+Addendum 2026-09-09 (afternoon), "proceed per your preferences": **BUG-369 FIXED** (zebra-language
+dd49288: an unknown method on `str`/`List` is a front-end refusal; tables derived by probing 641
+names through zig; `extend String` methods honoured) — the Check button's worst miss closed.
+**Problems pane, Go to line (Ctrl+G), Open by name** (zebra-ide 26b60f2). Both owed-to-refuter
+items closed (zebra-language 4faa308): the `.@"fn"`-twin lint (`fn-twins`, STATIC, red-checked),
+and BUG-358's residue as **BUG-371 FIXED** — a closure borrowed by a same-module callee (sig param
+used only as `f(v)`, escape-analysed) releases its pool slot on return, 200-call fixture + a
+storing control; **BUG-370** found and fixed on the way (a returning sig's thunk dropped the
+result — that shape had never compiled). Then the STATIC tier on torial itself: doc-lint had 11
+stale references and bug-fixture 8 unpinned fixes since 09-08 (4ac9c6a, 5821324): counts moved,
+`gui-scaffold-modules` + `libui-section` registered in DAILY with a multi-module GUI example
+(examples/gui_modules_smoke.zbr + sci.zbr — the first thing in the compiler repo that runs the
+BUG-340/343/355/357 shapes), `# pins:` for 340/343/355/356/357/358, 348/349 baselined (their
+control is dap_client_test here). --daily is 48 gates. No project-wide test runner, on purpose:
+a test file registered as a gate already is one. HEADs: zebra-language 3f2e763, zebra-ide 26b60f2.
+Owed by Sean: unchanged. Next: HashMap/Set/StringBuilder member tables (same derivation as
+BUG-369); Windows first run.

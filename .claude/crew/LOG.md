@@ -1465,3 +1465,14 @@ the two instances; the BUG-358 branch is the first one written under the rule.
 synchronous-callback callees outside the section (BUG-358's "still open" paragraph).
 
 — chair (Fable 5.1)
+
+**Owed — closed 2026-09-09 (afternoon).** The `.@"fn"`-twin lint is `tools/lint_fn_twins.py`
+(`fn-twins`, STATIC tier): every `.@"fn"` line in a section must have a byte-identical
+preamble twin; both-direction controls; red-checked by editing one section line's params
+index (zebra-language 4faa308). The synchronous-callback residue is **BUG-371, FIXED** in the
+same commit: a same-module callee whose sig parameter never escapes (used only as `f(v)`,
+per an escape walker mirroring `mightUseName*` arm for arm) releases the caller's pool slot
+on return — 200-call fixture, plus a control whose callee STORES the closure and must keep
+ten independent states. Fixing it exposed BUG-370: a capture closure through a RETURNING sig
+had never compiled at all (the thunk dropped the result), which is why the 65th-call panic
+had no witness before.
