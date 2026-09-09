@@ -106,6 +106,13 @@ class Model
     var tests_lines: List(str)
     var tests_jumps: List(int)
     var tests_only: List(str)            # the subset the queued run covers ("" = all)
+    # problems (09-09): the current buffer's diagnostics as a jumpable list — the
+    # squiggles, in order, with the message readable without hovering
+    var problems_pane: CodeEditor? = nil
+    var problem_lines: List(int)         # pane line → source line (0-based), -1 for a header
+    var problem_cols: List(int)
+    var goto_text: str = ""              # "Go to line" input
+    var open_text: str = ""              # "Open by name" input (searched under the project root)
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
     var dbg: DapClient? = nil
     var dbg_pane: CodeEditor? = nil
@@ -135,6 +142,8 @@ class Model
         .tests_lines = List(str)()
         .tests_jumps = List(int)()
         .tests_only = List(str)()
+        .problem_lines = List(int)()
+        .problem_cols = List(int)()
 
 union Msg
     tick
@@ -170,6 +179,9 @@ union Msg
     run_tests           # `zebra test` on the current file, structured in the tests pane
     rerun_failed_tests  # `zebra test --only <the failed ones>`
     jump_test
+    jump_problem
+    goto_line           # the "Go to line" input (Ctrl+G)
+    quick_open          # the "open by name" input: first file under the project root whose name matches
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def cursorLine(ed: CodeEditor): int
@@ -228,6 +240,7 @@ def applyDiagnostics(m: Model, ds: List(LspDiagnostic))
     ed.sci(SCI_ANNOTATIONCLEARALL, 0, 0)
     m.errors = 0
     m.warnings = 0
+    problemsRefresh(m, ds)
     for d in ds
         var is_err: bool = d.severity <= 1
         var start: int = ed.sci(SCI_POSITIONFROMLINE, d.line, 0) + d.col
@@ -258,6 +271,61 @@ def compilerPath(): str
         if z != ""
             return z
     return "zebra"
+
+# The Problems pane: one line per diagnostic of the current buffer, "E 12:5 message",
+# errors first, in source order. Rebuilt whenever the diagnostics are redrawn — the LSP's
+# after a quiet edit, a build's, a tool's — so it is never stale relative to the squiggles.
+def problemsRefresh(m: Model, ds: List(LspDiagnostic))
+    m.problem_lines = List(int)()
+    m.problem_cols = List(int)()
+    var sb = StringBuilder()
+    var n: int = 0
+    var sev: int = 1
+    while sev <= 4
+        for d in ds
+            if d.severity == sev or (sev == 4 and d.severity > 4)
+                var tag: str = "E"
+                if d.severity == 2
+                    tag = "W"
+                else if d.severity >= 3
+                    tag = "i"
+                sb.append(tag + " " + (d.line + 1).toString() + ":" + (d.col + 1).toString() + "  " + d.message + "\n")
+                m.problem_lines.add(d.line)
+                m.problem_cols.add(d.col)
+                n = n + 1
+        sev = sev + 1
+    if n == 0
+        sb.append("(no problems)\n")
+        m.problem_lines.add(-1)
+        m.problem_cols.add(0)
+    if m.problems_pane as pp
+        pp.setReadOnly(false)
+        pp.setText(sb.build())
+        pp.setReadOnly(true)
+
+# "Open by name": the first file under the project root (or the cwd) whose base name
+# equals the text, else whose path ends with it, else whose base name contains it.
+# Directories named .git / zig-out / .zig-cache / node_modules are skipped.
+def findByName(root: str, want: str): str
+    if want == ""
+        return ""
+    var w: str = want.replace("\\", "/")
+    var files: List(str) = Dir.walk(root)
+    var contains_hit: str = ""
+    var ends_hit: str = ""
+    for f in files
+        if f.contains("/.git/") or f.contains("/zig-out/") or f.contains("/.zig-cache/") or f.contains("/node_modules/")
+            continue
+        var bn: str = baseName(f)
+        if bn == w
+            return f
+        if ends_hit == "" and f.endsWith("/" + w)
+            ends_hit = f
+        if contains_hit == "" and bn.contains(w)
+            contains_hit = f
+    if ends_hit != ""
+        return ends_hit
+    return contains_hit
 
 # The command that serves a language. `zebra lsp` from the compiler; clangd and zls
 # from PATH (C and Zig). Started lazily, the first time a buffer of that language
@@ -447,6 +515,8 @@ def shortcutMsg(k: int, debugging: bool): Msg?
         return Msg.run_tests
     if a == "rerun_failed"
         return Msg.rerun_failed_tests
+    if a == "goto_line"
+        return Msg.goto_line
     if a == "debug"
         return Msg.debug_start
     if a == "continue"
@@ -486,6 +556,9 @@ def ideInit(): Model
     m.tests_pane = CodeEditor.forFile("tests.txt")
     m.tests_pane!.setReadOnly(true)
     m.tests_pane!.setText("(Run tests: every def test_*() in the current file, via `zebra test`)")
+    m.problems_pane = CodeEditor.forFile("problems.txt")
+    m.problems_pane!.setReadOnly(true)
+    m.problems_pane!.setText("(the current file's diagnostics appear here)")
     loadProject(m)
     startLsp(m)
     for p in startup_files
@@ -1377,6 +1450,35 @@ def update(m: Model, msg: Msg): Model
                     if openFile(m, t.file)
                         gotoLineCol(m.editor!, m.tests_jumps.at(ti) - 1, 0)
             return m
+        on Msg.jump_problem
+            var pi: int = cursorLine(m.problems_pane!)
+            if pi < m.problem_lines.len and m.problem_lines.at(pi) >= 0
+                gotoLineCol(m.editor!, m.problem_lines.at(pi), m.problem_cols.at(pi))
+            return m
+        on Msg.goto_line
+            var gt: str = m.goto_text.trim()
+            if gt == "" or gt.tryInt() == nil
+                m.status = "go to line: type a line number first"
+            else
+                var want: int = gt.toInt()
+                var nlines: int = m.editor!.sci(SCI_GETLINECOUNT, 0, 0)
+                if want < 1
+                    want = 1
+                if nlines > 0 and want > nlines
+                    want = nlines
+                gotoLineCol(m.editor!, want - 1, 0)
+                m.status = "line " + want.toString()
+            return m
+        on Msg.quick_open
+            var root: str = sys.cwd()
+            if m.manifest as mfq
+                root = mfq.root
+            var hit: str = findByName(root, m.open_text.trim())
+            if hit == ""
+                m.status = "open: nothing under " + root + " named like '" + m.open_text.trim() + "'"
+            else if openFile(m, hit)
+                m.open_text = ""
+            return m
         on Msg.jump_diag
             var i: int = cursorLine(m.gate_pane!)
             if i < m.pane_diag_idx.len and m.pane_diag_idx.at(i) >= 0
@@ -1496,6 +1598,12 @@ def view(g: Gui, m: Model)
             if g.button("Bookmark")
                 g.send(Msg.toggle_bookmark)
         using g.hbox("##findbar", false)
+            m.goto_text = g.input("line", m.goto_text)
+            if g.button("Go")
+                g.send(Msg.goto_line)
+            m.open_text = g.input("open by name", m.open_text)
+            if g.button("Open")
+                g.send(Msg.quick_open)
             m.find_text = g.input("find", m.find_text)
             if g.button("Find next")
                 g.send(Msg.find_next)
@@ -1545,6 +1653,10 @@ def view(g: Gui, m: Model)
                 m.outline!.render(g, "##syms", 0, 0)
                 if g.button("Jump to symbol")
                     g.send(Msg.jump_sym)
+                g.text("Problems")
+                m.problems_pane!.render(g, "##problems", 0, 0)
+                if g.button("Jump to problem")
+                    g.send(Msg.jump_problem)
         using g.hbox("##bottom", false)
             using g.vbox("##gatesbox", true)
                 g.text("Build / gates")

@@ -4,7 +4,7 @@
 # one tool, hooks through the queue (refuter, 2026-09-08: "a headless Model harness
 # would have caught the two name-keyed-map defects without a window").
 #   zebra --gui-backend=tui src/model_test.zbr
-use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText, editorOf, startTests
+use ide exposing Model, Msg, ideInit, update, runTool, pollGates, openFile, editorText, setEditorText, editorOf, startTests, findByName
 use keys exposing registerShortcuts, argCount
 use gates exposing ToolSpec, Manifest, loadManifest
 
@@ -79,6 +79,8 @@ def main()
     runTool(m, tools.at(3))
     drain(m)
     assert m.errors == 1, "the diags tool should have marked 1 error, got " + m.errors.toString()
+    # 3b. the Problems pane lists what was marked, jumpable (09-09)
+    assert m.problem_lines.len == 1 and m.problem_lines.at(0) == 0, "problems pane should list the one diagnostic on line 1"
 
     # 4. the save hook runs through the queue on Msg.save_file
     setEditorText(m, before + "// edited\n")
@@ -131,6 +133,20 @@ def main()
     startTests(m, List(str)())
     drain(m)
     assert m.tests!.cases.len == 0 and m.status.contains("no tests in this file"), m.status
+    # go to line / open by name (09-09): pure enough to drive headless
+    m.goto_text = "2"
+    var m6: Model = update(m, Msg.goto_line)
+    assert m6 == m and m.status == "line 2", m.status
+    m.goto_text = "x"
+    update(m, Msg.goto_line)
+    assert m.status.contains("type a line number"), m.status
+    assert findByName(ws, "g.zig").endsWith("/g.zig"), "exact base name"
+    assert findByName(ws, "zebra-ide").endsWith("/zebra-ide.json"), "contains match: " + findByName(ws, "zebra-ide")
+    assert findByName(ws, "no_such_thing_xyz") == ""
+    m.open_text = "g.zig"
+    update(m, Msg.quick_open)
+    assert m.bufs.cur()!.path.endsWith("/g.zig") and m.open_text == "", "quick open should switch to g.zig: " + m.status
+    assert openFile(m, tf), "back to the suite"
     # Run (Ctrl+R): the program's own output in the gates pane
     setEditorText(m, "def main()\n    print(\"ran-from-ide\")\n")
     var m5: Model = update(m, Msg.run_file)

@@ -99,6 +99,7 @@ window itself has none and has never been opened.
 - Keyboard shortcuts (09-08, needs the zig-libui-ng key shim → the pin bump): Ctrl+S
   save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, Ctrl+R run
   the current file, Ctrl+Shift+T run its tests, Ctrl+Shift+R re-run the failed ones,
+  Ctrl+G go to the line typed in the `line` box,
   F5 debug / continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11
   step out, F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks
   it claims nothing Scintilla owns — Ctrl+C/V/X/Z/Y/A stay the editor's). Until the
@@ -136,6 +137,14 @@ window itself has none and has never been opened.
   run found two compiler bugs, BUG-352/353, and the open-documents-only server.)
 - A gate that cannot run here (no lldb-dap) reports **SKIP**, not PASS — in the pane,
   in `gates.zbr`, and in `check.sh`.
+- **Problems / Go to line / Open by name (09-09):** the Problems pane under Symbols lists
+  the current file's diagnostics (`E 12:5 message`, errors first) whenever the squiggles
+  are redrawn — LSP, build or tool — and **Jump to problem** goes there. `line` + **Go**
+  (Ctrl+G) jumps to a line number; `open by name` + **Open** opens the first file under
+  the project root whose name matches (exact base name, then path suffix, then contains;
+  .git / zig-out / .zig-cache skipped). No project-wide test runner on purpose: a test
+  file registered as a gate (`"cmd": ["zebra", "test", "x_test.zbr"]`) already is one,
+  and Run gates runs them all.
 - **Tests (09-09):** Run tests / Re-run failed / Jump to test, on the current file.
   Discovery is the compiler's (`zebra test --list`: `def test_*()` with no params, and
   class-static `test_*`; a `def test_x(n)` is not a test and is not listed), the run is
