@@ -327,3 +327,5 @@ Addendum 2026-09-09 (night): BUG-356 FIXED — `zebra --shared` exists, the DynL
 is green on Linux (in-process plugins unblocked pending a Windows run); fuzz/leakgen.py
 landed as the DAILY gate `leakgen` and its first 3,000 programs found and fixed BUG-360..366.
 zebra-language HEAD 3b7d1d3. The open worklist above minus BUG-356 and the fuzzer.
+
+Addendum 2026-09-09 (early morning): zebra-language 4882b1e — loop variables typed by the checker (root of BUG-362..366); BUG-336/339/354 fixed under the leakgen gate; BUG-367 (numeric-for bodies were unchecked). Still open in that class: BUG-337, BUG-338.
