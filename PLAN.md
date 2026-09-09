@@ -322,3 +322,8 @@ Open worklist, in order: **BUG-356** (shared-library round trip: fat pointer gar
 the boundary; add `--shared`; flip the pinned gate green — then DLL plugins); a grammar fuzzer
 for the "Zebra accepts, Zig rejects" class; BUG-354; the `.@"fn"`-twin lint (owed to the
 refuter); `zebra lsp` dependents beyond one directory; `--listen`; Haiku.
+
+Addendum 2026-09-09 (night): BUG-356 FIXED — `zebra --shared` exists, the DynLib round trip
+is green on Linux (in-process plugins unblocked pending a Windows run); fuzz/leakgen.py
+landed as the DAILY gate `leakgen` and its first 3,000 programs found and fixed BUG-360..366.
+zebra-language HEAD 3b7d1d3. The open worklist above minus BUG-356 and the fuzzer.
