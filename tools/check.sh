@@ -66,7 +66,7 @@ B=${LIBUI_BINDINGS:-}
 if [ -z "$B" ]; then for c in /home/claude/libui-bindings /c/Projects/zig-libui-ng/src; do [ -f "$c/ui.zig" ] && B=$c; done; fi
 if [ -n "$B" ]; then
   step "ide.zbr (libui_ng, sema vs $B)"
-  (cd src && rm -rf ide_gui_libui_ng && "$ZEBRA" --gui-backend=libui_ng --output-dir . ide.zbr >/dev/null 2>&1; cd ide_gui_libui_ng && zig build-obj -target x86_64-windows-gnu -fno-emit-bin --dep ui --dep sci -Mroot=src/main.zig --dep ui -Msci="$B/sci.zig" -Mui="$B/ui.zig") && echo PASS || { echo FAIL; fail=1; }
+  (cd src && rm -rf ide_gui_libui_ng && "$ZEBRA" --gui-backend=libui_ng --scaffold-only --output-dir . ide.zbr >/dev/null 2>&1; cd ide_gui_libui_ng && zig build-obj -target x86_64-windows-gnu -fno-emit-bin --dep ui --dep sci -Mroot=src/main.zig --dep ui -Msci="$B/sci.zig" -Mui="$B/ui.zig") && echo PASS || { echo FAIL; fail=1; }
 else
   step "libui sema: skipped (set LIBUI_BINDINGS)"
 fi
