@@ -362,3 +362,20 @@ control is dap_client_test here). --daily is 48 gates. No project-wide test runn
 a test file registered as a gate already is one. HEADs: zebra-language 3f2e763, zebra-ide 26b60f2.
 Owed by Sean: unchanged. Next: HashMap/Set/StringBuilder member tables (same derivation as
 BUG-369); Windows first run.
+
+## 2026-09-10 — release groundwork and the newcomer probe rounds (zebra-language side)
+
+Ledger of what landed in zebra-language while the IDE sat: release groundwork (`46fc32b`:
+`_zbr_version`, bundled-Zig resolution, `release.yml`, installers, `docs/RELEASING.md`),
+BUG-401..423 across `4ebf20f` `0dd3f52` `c3d838e` `b7fea0b` (what `print` renders, unknown
+methods, missing-return message, lexer locations, str `+=`, float division, `Regex.split`,
+arrow-lambda refusal, `1e3`, sortBy key functions, join on any list), then `a2e7fdf`:
+BUG-417 (`x -> .lower()`, Sean's call), BUG-418 (generic `HashMap(K, V)` fields), **MIT
+LICENSE (Sean's call)**, **all three Zig checksums pinned**, 0.9 queue tidy. Book baseline
+127 → 388 over the same stretch. Full status: wiki
+`concept_zebra-hygiene-docs-onboarding-2026-09`.
+
+**Owed by Sean — the list above, minus the two he settled today (LICENSE = MIT, pinned
+checksums):** the pushes (zebra-language, zebra-ide, zebra-language-book, zig-libui-ng), the
+Windows first run (items 1–2), the `_to_delete/` sweep (3), BUG-351's semantics (4), and
+`--daily` on the tag commit before cutting `0.9_zig0.16`.
