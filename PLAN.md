@@ -379,3 +379,21 @@ LICENSE (Sean's call)**, **all three Zig checksums pinned**, 0.9 queue tidy. Boo
 checksums):** the pushes (zebra-language, zebra-ide, zebra-language-book, zig-libui-ng), the
 Windows first run (items 1–2), the `_to_delete/` sweep (3), BUG-351's semantics (4), and
 `--daily` on the tag commit before cutting `0.9_zig0.16`.
+
+## 2026-09-11 — `v0.9.0-rc1_zig0.16` tagged on zebra-language `e9b7ef2`
+
+`--daily` 49/49 in ONE invocation on torial (1h51m, JOBS=1), after four runs whose reds were
+all fallout of the preceding two days rather than language defects — every one recorded in
+zebra-language's CLAUDE.md (`e53df36`, "DAILY tier 2026-09-11"). Notable for the IDE:
+`dynlib-roundtrip` now passes ON WINDOWS (Zig 0.16's `std.DynLib` has no Windows arm; the
+runtime carries a kernel32 loader — the plugin design walks again), `libui-section` scaffolds
+with `--scaffold-only` so a gate never opens a window (zebra-ide `37218ab` uses it too), and
+both heavy baselines were re-recorded (full_sweep 485, output_sweep 466). The tag name is
+`v0.9.0-rc1_zig0.16` rather than 0.89 because 0.89 sorts AFTER 0.9 under semver.
+
+**Owed by Sean:** `git push origin main --tags` in zebra-language (the tag fires
+`release.yml`; the tree also carries `e53df36` after the tag, fine), the other three pushes
+(zebra-ide, zebra-language-book, zig-libui-ng), hand-testing rc1 (installer + `zebra --version`
+→ `zebra 0.9.0-rc1 (zig 0.16.0)`), then `0.9.0` when it holds; the Windows first run (1–2);
+BUG-351's semantics (4). The `_to_delete/` sweep (3) is done for zebra-language;
+zebra-ide's `_to_delete/` still holds the transfer bundles.
