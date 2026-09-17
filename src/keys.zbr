@@ -57,6 +57,14 @@ def registerShortcuts(ed: CodeEditor)
     for sc in shortcutList()
         ed.hotkey(sc.vk, sc.mods)
 
+# The same chords at the WINDOW (09-17): uiWindowOnKey in our libui-ng fork sees a
+# key-down before the focused control does, so Ctrl+S works with the focus in a
+# pane, an input or a button, not only in the editor. Idempotent; the view calls
+# it every frame because init has no Gui.
+def registerWindowShortcuts(g: Gui)
+    for sc in shortcutList()
+        g.hotkey(sc.vk, sc.mods)
+
 # sys.args() from a `use`d module: BUG-357's witness (per-module preamble globals
 # used to leave `_args` uninitialised here and panic "sys.args OOM").
 def argCount(): int
