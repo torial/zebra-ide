@@ -26,8 +26,9 @@
 #   * many documents in ONE Scintilla control via document pointers (plan P2):
 #     each Buffer owns an SCI_CREATEDOCUMENT; switching is SCI_SETDOCPOINTER,
 #     which keeps undo history per document; caret/scroll are saved by hand.
-#     Tabs are one g.buttonId per open file, keyed by path (a closed tab's button is
-#     hidden by the GUI section because the view stops emitting it — 09-08).
+#     Tabs are a uiTab STRIP with empty pages, one per open file keyed by path
+#     (09-16; libui-ng's uiTab got uiTabSetName in our fork, so the dirty mark can
+#     rename a tab -- before that it was a row of buttons).
 #   * no keyboard shortcuts: libui exposes no key events for Scintilla, and
 #     Scintilla's own SCI_ASSIGNCMDKEY only maps keys to Scintilla commands;
 #   * events arrive through the notify bridge (editor.takeModified /
@@ -112,6 +113,7 @@ class Model
     var problem_lines: List(int)         # pane line → source line (0-based), -1 for a header
     var problem_cols: List(int)
     var goto_text: str = ""              # "Go to line" input
+    var tab_shown: int = -1              # the tab strip's page index the model last put it on
     var open_text: str = ""              # "Open by name" input (searched under the project root)
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
     var dbg: DapClient? = nil
@@ -1319,6 +1321,7 @@ def update(m: Model, msg: Msg): Model
             return m
         on Msg.select_tab as ti
             switchTo(m, ti)
+            m.tab_shown = m.bufs.current
             return m
         on Msg.close_tab
             # unsaved changes: refuse once and say so; a second Close discards (advocate 9)
@@ -1629,19 +1632,27 @@ def view(g: Gui, m: Model)
                 g.send(Msg.debug_stop)
             if g.button("Jump to frame")
                 g.send(Msg.jump_frame)
-        # tab row: one button per open file, keyed by PATH (not slot) so closing a
-        # middle tab hides its own button and the rest keep their identity
-        using g.hbox("##tabs", false)
-            var dirty_now: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
-            var t: int = 0
-            while t < m.bufs.count()
-                var lbl: str = m.bufs.label(t, dirty_now and t == m.bufs.current)
-                if t == m.bufs.current
-                    lbl = "[" + lbl + "]"
-                if g.buttonId("##tab:" + m.bufs.items.at(t).path, lbl)
-                    g.send(Msg.select_tab(t))
-                t = t + 1
-        g.separator()
+        # tab strip (09-16): one uiTab page per open file, keyed by PATH, holding
+        # nothing -- the ONE Scintilla below shows the current document. Pages follow
+        # the view (inserted in model order, removed when closed, renamed when the
+        # dirty mark changes; the libui section does the bookkeeping), the strip's
+        # selection drives the model, and the model drives the strip when it moves
+        # on its own (open, close, quick-open). Was a row of buttons until libui-ng
+        # grew uiTabSetName.
+        var dirty_now: bool = m.editor!.sci(SCI_GETMODIFY, 0, 0) != 0
+        g.beginTabs("##tabs", false)
+        var t: int = 0
+        while t < m.bufs.count()
+            g.beginTabPage("##tab:" + m.bufs.items.at(t).path, m.bufs.label(t, dirty_now and t == m.bufs.current))
+            g.endTabPage()
+            t = t + 1
+        g.endTabs()
+        var picked: int = g.tabSelected("##tabs")
+        if picked >= 0 and picked != m.tab_shown
+            g.send(Msg.select_tab(picked))
+        else if m.bufs.count() > 0 and picked != m.bufs.current
+            g.selectTab("##tabs", m.bufs.current)
+            m.tab_shown = m.bufs.current
         using g.hbox("##body", true)
             m.editor!.render(g, "##code", 0, 0)
             using g.vbox("##side", false)
