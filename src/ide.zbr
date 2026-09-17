@@ -1565,7 +1565,7 @@ def view(g: Gui, m: Model)
             g.send(wm)
         wk = g.takeKey()
         wkn = wkn + 1
-    g.send(Msg.tick)
+    g.every(100, Msg.tick)     # 09-17: a subscription, not a heartbeat (frames are events now)
     using g.vbox("##root", true)
         using g.hbox("##toolbar", false)
             if g.button("Open…")
