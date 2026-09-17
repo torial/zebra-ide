@@ -59,8 +59,6 @@ const MARKER_CURRENT: int = 4       # the debugger's current line
 
 class Model
     var editor: CodeEditor? = nil
-    var refs: CodeEditor? = nil          # references pane (read-only)
-    var outline: CodeEditor? = nil       # symbols pane (read-only)
     var servers: HashMap(str, LspClient)   # one language server per language: zebra / c / zig
     var servers_tried: List(str)           # languages whose server start already failed (say so once)
     var req_lang: str = ""                 # the language whose server holds the pending def/refs/sym/rename ids
@@ -76,9 +74,12 @@ class Model
     var refs_id: int = 0
     var sym_id: int = 0
     var rename_id: int = 0
-    var ref_lines: List(int)             # pane line -> source line (0-based)
+    var ref_lines: List(int)             # table row -> source line (0-based)
     var ref_uris: List(str)
+    var ref_rows: List(str)              # the References table, one text per row (09-17: tables, not panes)
     var sym_lines: List(int)
+    var sym_rows: List(str)
+    var problem_rows: List(str)
     var new_name: str = ""
     var find_text: str = ""
     var replace_text: str = ""
@@ -109,11 +110,16 @@ class Model
     var tests_only: List(str)            # the subset the queued run covers ("" = all)
     # problems (09-09): the current buffer's diagnostics as a jumpable list — the
     # squiggles, in order, with the message readable without hovering
-    var problems_pane: CodeEditor? = nil
     var problem_lines: List(int)         # pane line → source line (0-based), -1 for a header
     var problem_cols: List(int)
     var goto_text: str = ""              # "Go to line" input
     var tab_shown: int = -1              # the tab strip's page index the model last put it on
+    var want_open: bool = false          # File > Open… asked; the view owns the dialog
+    # Project explorer (09-17): the cwd's tree, folders expanded on click. Listings are
+    # cached in the model (a render must not touch the disk: it runs on every tick).
+    var explorer_root: str = "."
+    var explorer_open: HashMap(str, List(str))   # expanded dir -> its entries (dirs first, sorted)
+    var explorer_shown: bool = true
     var open_text: str = ""              # "Open by name" input (searched under the project root)
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
     var dbg: DapClient? = nil
@@ -130,7 +136,11 @@ class Model
     cue init()
         .ref_lines = List(int)()
         .ref_uris = List(str)()
+        .ref_rows = List(str)()
         .sym_lines = List(int)()
+        .sym_rows = List(str)()
+        .problem_rows = List(str)()
+        .explorer_open = HashMap(str, List(str))()
         .bufs = BufferSet()
         .servers = HashMap(str, LspClient)()
         .servers_tried = List(str)()
@@ -155,8 +165,8 @@ union Msg
     find_refs
     symbols
     rename
-    jump_ref
-    jump_sym
+    jump_ref: int       # the References table row (09-17: tables carry the row)
+    jump_sym: int
     next_bookmark
     select_tab: int
     close_tab
@@ -181,9 +191,19 @@ union Msg
     run_tests           # `zebra test` on the current file, structured in the tests pane
     rerun_failed_tests  # `zebra test --only <the failed ones>`
     jump_test
-    jump_problem
+    jump_problem: int
     goto_line           # the "Go to line" input (Ctrl+G)
     quick_open          # the "open by name" input: first file under the project root whose name matches
+    # 09-17: the inputs carry their text as messages (g.field), the menus send
+    want_open           # File > Open…: the view shows the dialog on its next render
+    open_path: str      # the dialog's answer
+    set_new_name: str
+    set_goto_text: str
+    set_open_text: str
+    set_find_text: str
+    set_replace_text: str
+    toggle_dir: str     # explorer: expand or collapse a folder
+    toggle_explorer
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def cursorLine(ed: CodeEditor): int
@@ -280,7 +300,7 @@ def compilerPath(): str
 def problemsRefresh(m: Model, ds: List(LspDiagnostic))
     m.problem_lines = List(int)()
     m.problem_cols = List(int)()
-    var sb = StringBuilder()
+    m.problem_rows = List(str)()
     var n: int = 0
     var sev: int = 1
     while sev <= 4
@@ -291,19 +311,15 @@ def problemsRefresh(m: Model, ds: List(LspDiagnostic))
                     tag = "W"
                 else if d.severity >= 3
                     tag = "i"
-                sb.append(tag + " " + (d.line + 1).toString() + ":" + (d.col + 1).toString() + "  " + d.message + "\n")
+                m.problem_rows.add(tag + " " + (d.line + 1).toString() + ":" + (d.col + 1).toString() + "  " + d.message)
                 m.problem_lines.add(d.line)
                 m.problem_cols.add(d.col)
                 n = n + 1
         sev = sev + 1
     if n == 0
-        sb.append("(no problems)\n")
+        m.problem_rows.add("(no problems)")
         m.problem_lines.add(-1)
         m.problem_cols.add(0)
-    if m.problems_pane as pp
-        pp.setReadOnly(false)
-        pp.setText(sb.build())
-        pp.setReadOnly(true)
 
 # "Open by name": the first file under the project root (or the cwd) whose base name
 # equals the text, else whose path ends with it, else whose base name contains it.
@@ -543,12 +559,8 @@ def ideInit(): Model
     var m = Model()
     m.editor = CodeEditor.forZebra()
     registerShortcuts(m.editor!)
-    m.refs = CodeEditor.forFile("references.txt")
-    m.refs!.setReadOnly(true)
-    m.refs!.setText("(references appear here)")
-    m.outline = CodeEditor.forFile("symbols.txt")
-    m.outline!.setReadOnly(true)
-    m.outline!.setText("(symbols appear here)")
+    # References / Symbols / Problems are TABLES since 09-17 (g.beginTable over
+    # uiTable): a row per hit, double-click or the Jump button to go there
     m.gate_pane = CodeEditor.forFile("gates.txt")
     m.gate_pane!.setReadOnly(true)
     m.gate_pane!.setText("(build and gate output appears here)")
@@ -558,10 +570,9 @@ def ideInit(): Model
     m.tests_pane = CodeEditor.forFile("tests.txt")
     m.tests_pane!.setReadOnly(true)
     m.tests_pane!.setText("(Run tests: every def test_*() in the current file, via `zebra test`)")
-    m.problems_pane = CodeEditor.forFile("problems.txt")
-    m.problems_pane!.setReadOnly(true)
-    m.problems_pane!.setText("(the current file's diagnostics appear here)")
     loadProject(m)
+    m.explorer_root = "."
+    m.explorer_open.put(m.explorer_root, explorerList(m.explorer_root))
     startLsp(m)
     for p in startup_files
         openFile(m, p)
@@ -1256,25 +1267,23 @@ def tick(m: Model)
         if rc.takeReply(m.refs_id) as r
             m.refs_id = 0
             var locs: List(LspLocation) = rc.locations(r)
-            var sb = StringBuilder()
             m.ref_lines = List(int)()
             m.ref_uris = List(str)()
+            m.ref_rows = List(str)()
             for l in locs
-                sb.append(baseName(pathOfUri(l.uri)) + ":" + (l.line + 1).toString() + ":" + (l.col + 1).toString() + "\n")
+                m.ref_rows.add(baseName(pathOfUri(l.uri)) + ":" + (l.line + 1).toString() + ":" + (l.col + 1).toString())
                 m.ref_lines.add(l.line)
                 m.ref_uris.add(l.uri)
-            m.refs!.setReadOnly(false)
-            m.refs!.setText(sb.build())
-            m.refs!.setReadOnly(true)
             m.status = locs.len.toString() + " reference(s)"
     if m.sym_id != 0
         if rc.takeReply(m.sym_id) as r
             m.sym_id = 0
             m.sym_lines = List(int)()
             var outline_text: str = symbolLines(r, m.sym_lines)
-            m.outline!.setReadOnly(false)
-            m.outline!.setText(outline_text)
-            m.outline!.setReadOnly(true)
+            m.sym_rows = List(str)()
+            for ln in outline_text.split("\n")
+                if ln != ""
+                    m.sym_rows.add(ln)
             m.status = m.sym_lines.len.toString() + " symbol(s)"
     if m.rename_id != 0
         if rc.takeReply(m.rename_id) as r
@@ -1301,6 +1310,37 @@ def update(m: Model, msg: Msg): Model
             return m
         on Msg.open_file
             return m        # dialog result is delivered through Msg by view (button-gated there)
+        on Msg.want_open
+            m.want_open = true
+            return m
+        on Msg.open_path as op
+            if not openFile(m, op)
+                pass
+            return m
+        on Msg.set_new_name as s1
+            m.new_name = s1
+            return m
+        on Msg.set_goto_text as s2
+            m.goto_text = s2
+            return m
+        on Msg.set_open_text as s3
+            m.open_text = s3
+            return m
+        on Msg.set_find_text as s4
+            m.find_text = s4
+            return m
+        on Msg.set_replace_text as s5
+            m.replace_text = s5
+            return m
+        on Msg.toggle_dir as dp
+            if m.explorer_open.get(dp) != nil
+                m.explorer_open.remove(dp)
+            else
+                m.explorer_open.put(dp, explorerList(dp))
+            return m
+        on Msg.toggle_explorer
+            m.explorer_shown = not m.explorer_shown
+            return m
         on Msg.save_file
             if m.bufs.cur() as sb
                 File.write(sb.path, m.editor!.getText())
@@ -1453,9 +1493,8 @@ def update(m: Model, msg: Msg): Model
                     if openFile(m, t.file)
                         gotoLineCol(m.editor!, m.tests_jumps.at(ti) - 1, 0)
             return m
-        on Msg.jump_problem
-            var pi: int = cursorLine(m.problems_pane!)
-            if pi < m.problem_lines.len and m.problem_lines.at(pi) >= 0
+        on Msg.jump_problem as pi
+            if pi >= 0 and pi < m.problem_lines.len and m.problem_lines.at(pi) >= 0
                 gotoLineCol(m.editor!, m.problem_lines.at(pi), m.problem_cols.at(pi))
             return m
         on Msg.goto_line
@@ -1530,9 +1569,8 @@ def update(m: Model, msg: Msg): Model
                     # rename, which on selfhost/ would have cost a minute.)
                     m.rename_id = c.rename(b.uri, cursorLine(m.editor!), cursorCol(m.editor!), m.new_name)
             return m
-        on Msg.jump_ref
-            var i: int = cursorLine(m.refs!)
-            if i < m.ref_lines.len
+        on Msg.jump_ref as i
+            if i >= 0 and i < m.ref_lines.len
                 var here2: bool = true
                 if m.bufs.cur() as b
                     if m.ref_uris.at(i) != b.uri
@@ -1540,9 +1578,8 @@ def update(m: Model, msg: Msg): Model
                 if here2
                     gotoLineCol(m.editor!, m.ref_lines.at(i), 0)
             return m
-        on Msg.jump_sym
-            var i: int = cursorLine(m.outline!)
-            if i < m.sym_lines.len
+        on Msg.jump_sym as i
+            if i >= 0 and i < m.sym_lines.len
                 gotoLineCol(m.editor!, m.sym_lines.at(i), 0)
             return m
         on Msg.next_bookmark
@@ -1553,6 +1590,64 @@ def update(m: Model, msg: Msg): Model
             if nxt >= 0
                 gotoLineCol(m.editor!, nxt, 0)
             return m
+
+# The explorer's listing of one folder: directories first, each group sorted; the
+# usual noise skipped. Called from update (expand) and init, never from view.
+def explorerSkip(name: str): bool
+    return name == ".git" or name == "zig-out" or name == ".zig-cache" or name == "_to_delete" or name == "zig-pkg" or name.startsWith(".")
+
+def explorerList(dir: str): List(str)
+    var dirs: List(str) = List(str)()
+    var files: List(str) = List(str)()
+    for name in File.listDir(dir)
+        if explorerSkip(name)
+            continue
+        if Dir.exists(dir + "/" + name)
+            dirs.add(name)
+        else
+            files.add(name)
+    dirs.sort()
+    files.sort()
+    var out: List(str) = List(str)()
+    for d in dirs
+        out.add(d + "/")
+    for f in files
+        out.add(f)
+    return out
+
+# One folder of the explorer: a vbox keyed by the folder's path, one action per entry;
+# an expanded folder's box is inserted right under its row -- the tree core's insert-
+# mid-siblings path, exercised by real use rather than a smoke.
+def explorerDir(g: Gui, m: Model, dir: str, depth: int)
+    var pad: str = ""
+    var i: int = 0
+    while i < depth
+        pad = pad + "   "
+        i = i + 1
+    if m.explorer_open.get(dir) as entries
+        for e in entries
+            var full: str = dir + "/" + e
+            if e.endsWith("/")
+                var sub: str = full.substring(0, full.len - 1)
+                var mark: str = "▸ "
+                if m.explorer_open.get(sub) != nil
+                    mark = "▾ "
+                g.action(pad + mark + e, Msg.toggle_dir(sub))
+                using g.vbox("##dir:" + sub, false)
+                    explorerDir(g, m, sub, depth + 1)
+            else
+                g.action(pad + e, Msg.open_path(full))
+
+# A one-column table of texts under a header (References / Symbols / Problems).
+def rowTable(g: Gui, id: str, header: str, rows: List(str))
+    if g.beginTable(id, 1)
+        g.tableSetupColumn(header)
+        g.tableHeadersRow()
+        for r in rows
+            g.tableNextRow()
+            g.tableNextColumn()
+            g.text(r)
+        g.endTable()
 
 def view(g: Gui, m: Model)
     # window-wide chords (09-17): claimed at the window, drained here as messages;
@@ -1566,82 +1661,96 @@ def view(g: Gui, m: Model)
         wk = g.takeKey()
         wkn = wkn + 1
     g.every(100, Msg.tick)     # 09-17: a subscription, not a heartbeat (frames are events now)
+    # Menus (09-17, concept_zebra-gui-declarative §6c): the three toolbar rows became a
+    # native menubar; every item carries the Msg it sends, and the chords in keys.zbr
+    # still fire the same messages. libui fixes the menubar at the first render, so
+    # nothing here depends on the model.
+    g.beginMenu("File")
+    g.menuItem("Open…", Msg.want_open)
+    g.menuItem("Save", Msg.save_file)
+    g.menuItem("Close", Msg.close_tab)
+    g.menuSeparator()
+    g.menuItem("Reload project", Msg.reload_manifest)
+    g.menuSeparator()
+    g.menuQuit()
+    g.endMenu()
+    g.beginMenu("Edit")
+    g.menuItem("Find next", Msg.find_next)
+    g.menuItem("Replace", Msg.replace_one)
+    g.menuItem("Replace all", Msg.replace_all)
+    g.menuSeparator()
+    g.menuItem("Go to line", Msg.goto_line)
+    g.menuItem("Open by name", Msg.quick_open)
+    g.menuItem("Rename symbol", Msg.rename)
+    g.menuSeparator()
+    g.menuItem("Toggle bookmark", Msg.toggle_bookmark)
+    g.menuItem("Next bookmark", Msg.next_bookmark)
+    g.endMenu()
+    g.beginMenu("View")
+    g.menuItem("Project explorer", Msg.toggle_explorer)
+    g.endMenu()
+    g.beginMenu("Navigate")
+    g.menuItem("Go to definition", Msg.goto_def)
+    g.menuItem("Find references", Msg.find_refs)
+    g.menuItem("Symbols", Msg.symbols)
+    g.endMenu()
+    g.beginMenu("Build")
+    g.menuItem("Build", Msg.build)
+    g.menuItem("Run gates", Msg.run_gates)
+    g.menuItem("Run", Msg.run_file)
+    g.menuSeparator()
+    g.menuItem("Run tests", Msg.run_tests)
+    g.menuItem("Re-run failed tests", Msg.rerun_failed_tests)
+    g.endMenu()
+    g.beginMenu("Debug")
+    g.menuItem("Toggle breakpoint", Msg.toggle_breakpoint)
+    g.menuSeparator()
+    g.menuItem("Start", Msg.debug_start)
+    g.menuItem("Continue", Msg.debug_continue)
+    g.menuItem("Next", Msg.debug_next)
+    g.menuItem("Step in", Msg.debug_step_in)
+    g.menuItem("Step out", Msg.debug_step_out)
+    g.menuItem("Stop", Msg.debug_stop)
+    g.menuSeparator()
+    g.menuItem("Jump to frame", Msg.jump_frame)
+    g.endMenu()
+    # File > Open… asked last update; the dialog belongs to the view (it needs the window)
+    if m.want_open
+        m.want_open = false
+        var p = g.openFile()
+        if p as path
+            g.send(Msg.open_path(path))
     using g.vbox("##root", true)
-        using g.hbox("##toolbar", false)
-            if g.button("Open…")
-                var p = g.openFile()
-                if p as path
-                    if not openFile(m, path)
-                        pass
-            if g.button("Save")
-                g.send(Msg.save_file)
-            if g.button("Definition")
-                g.send(Msg.goto_def)
-            if g.button("References")
-                g.send(Msg.find_refs)
-            if g.button("Symbols")
-                g.send(Msg.symbols)
-            m.new_name = g.input("new name", m.new_name)
-            if g.button("Rename")
-                g.send(Msg.rename)
-            if g.button("Next bookmark")
-                g.send(Msg.next_bookmark)
-            if g.button("Close")
-                g.send(Msg.close_tab)
-            if g.button("Build")
-                g.send(Msg.build)
-            if g.button("Run gates")
-                g.send(Msg.run_gates)
-            if g.button("Run")
-                g.send(Msg.run_file)
-            if g.button("Run tests")
-                g.send(Msg.run_tests)
-            if g.button("Re-run failed")
-                g.send(Msg.rerun_failed_tests)
-            if g.button("Reload project")
-                g.send(Msg.reload_manifest)
-            # Tools row: the manifest's process plugins (buttons; hooks run on save/open)
+        # the find bar: fields carry their text as messages; the buttons are actions
+        using g.hbox("##findbar", false)
+            g.field("line", m.goto_text, def(s: str): Msg
+                return Msg.set_goto_text(s)
+            )
+            g.action("Go", Msg.goto_line)
+            g.field("open by name", m.open_text, def(s: str): Msg
+                return Msg.set_open_text(s)
+            )
+            g.action("Open", Msg.quick_open)
+            g.field("find", m.find_text, def(s: str): Msg
+                return Msg.set_find_text(s)
+            )
+            g.action("Find next", Msg.find_next)
+            g.field("replace", m.replace_text, def(s: str): Msg
+                return Msg.set_replace_text(s)
+            )
+            g.action("Replace", Msg.replace_one)
+            g.field("new name", m.new_name, def(s: str): Msg
+                return Msg.set_new_name(s)
+            )
+            g.action("Rename", Msg.rename)
+            # Tools: the manifest's process plugins stay buttons -- a reload can change
+            # them, and a menubar is fixed at the first render
             if m.manifest as mft
                 var tools: List(ToolSpec) = mft.buttons()
                 var ti: int = 0
                 while ti < tools.len
-                    if g.buttonId("##tool:" + tools.at(ti).name, tools.at(ti).label)
-                        g.send(Msg.run_tool(ti))
+                    g.action(tools.at(ti).label, Msg.run_tool(ti))
                     ti = ti + 1
-            if g.button("Bookmark")
-                g.send(Msg.toggle_bookmark)
-        using g.hbox("##findbar", false)
-            m.goto_text = g.input("line", m.goto_text)
-            if g.button("Go")
-                g.send(Msg.goto_line)
-            m.open_text = g.input("open by name", m.open_text)
-            if g.button("Open")
-                g.send(Msg.quick_open)
-            m.find_text = g.input("find", m.find_text)
-            if g.button("Find next")
-                g.send(Msg.find_next)
-            m.replace_text = g.input("replace", m.replace_text)
-            if g.button("Replace")
-                g.send(Msg.replace_one)
-            if g.button("Replace all")
-                g.send(Msg.replace_all)
-        using g.hbox("##debugbar", false)
-            if g.button("Breakpoint")
-                g.send(Msg.toggle_breakpoint)
-            if g.button("Debug")
-                g.send(Msg.debug_start)
-            if g.button("Continue")
-                g.send(Msg.debug_continue)
-            if g.button("Next")
-                g.send(Msg.debug_next)
-            if g.button("Step in")
-                g.send(Msg.debug_step_in)
-            if g.button("Step out")
-                g.send(Msg.debug_step_out)
-            if g.button("Stop")
-                g.send(Msg.debug_stop)
-            if g.button("Jump to frame")
-                g.send(Msg.jump_frame)
         # tab strip (09-16): one uiTab page per open file, keyed by PATH, holding
         # nothing -- the ONE Scintilla below shows the current document. Pages follow
         # the view (inserted in model order, removed when closed, renamed when the
@@ -1664,32 +1773,40 @@ def view(g: Gui, m: Model)
             g.selectTab("##tabs", m.bufs.current)
             m.tab_shown = m.bufs.current
         using g.hbox("##body", true)
+            if m.explorer_shown
+                using g.vbox("##explorer", false)
+                    g.minSize("##explorer", 220, 0)
+                    g.text("Project")
+                    explorerDir(g, m, m.explorer_root, 0)
             m.editor!.render(g, "##code", 0, 0)
             using g.vbox("##side", false)
                 g.minSize("##side", 320, 0)   # a floor for the pane; the editor takes the rest
-                g.text("References")
-                m.refs!.render(g, "##refs", 0, 0)
-                if g.button("Jump to reference")
-                    g.send(Msg.jump_ref)
-                g.text("Symbols")
-                m.outline!.render(g, "##syms", 0, 0)
-                if g.button("Jump to symbol")
-                    g.send(Msg.jump_sym)
-                g.text("Problems")
-                m.problems_pane!.render(g, "##problems", 0, 0)
-                if g.button("Jump to problem")
-                    g.send(Msg.jump_problem)
+                # the three lists are tables (09-17): a double-click jumps, and the Jump
+                # button carries the row selected at the last render
+                rowTable(g, "##refs", "References", m.ref_rows)
+                var act_ref: int = g.tableActivatedRow("##refs")
+                if act_ref >= 0
+                    g.send(Msg.jump_ref(act_ref))
+                g.action("Jump to reference", Msg.jump_ref(g.tableSelectedRow("##refs")))
+                rowTable(g, "##syms", "Symbols", m.sym_rows)
+                var act_sym: int = g.tableActivatedRow("##syms")
+                if act_sym >= 0
+                    g.send(Msg.jump_sym(act_sym))
+                g.action("Jump to symbol", Msg.jump_sym(g.tableSelectedRow("##syms")))
+                rowTable(g, "##problems", "Problems", m.problem_rows)
+                var act_prob: int = g.tableActivatedRow("##problems")
+                if act_prob >= 0
+                    g.send(Msg.jump_problem(act_prob))
+                g.action("Jump to problem", Msg.jump_problem(g.tableSelectedRow("##problems")))
         using g.hbox("##bottom", false)
             using g.vbox("##gatesbox", true)
                 g.text("Build / gates")
                 m.gate_pane!.render(g, "##gates", 0, 0)
-                if g.button("Jump to diagnostic")
-                    g.send(Msg.jump_diag)
+                g.action("Jump to diagnostic", Msg.jump_diag)
             using g.vbox("##testsbox", true)
                 g.text("Tests")
                 m.tests_pane!.render(g, "##tests", 0, 0)
-                if g.button("Jump to test")
-                    g.send(Msg.jump_test)
+                g.action("Jump to test", Msg.jump_test)
             using g.vbox("##dbgbox", true)
                 g.text("Debugger")
                 m.dbg_pane!.render(g, "##dbg", 0, 0)
