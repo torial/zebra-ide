@@ -1632,11 +1632,11 @@ def explorerDir(g: Gui, m: Model, dir: str, depth: int)
                 var mark: str = "▸ "
                 if m.explorer_open.get(sub) != nil
                     mark = "▾ "
-                g.action(pad + mark + e, Msg.toggle_dir(sub))
+                g.button(pad + mark + e, Msg.toggle_dir(sub))
                 using g.vbox("##dir:" + sub, false)
                     explorerDir(g, m, sub, depth + 1)
             else
-                g.action(pad + e, Msg.open_path(full))
+                g.button(pad + e, Msg.open_path(full))
 
 # A one-column table of texts under a header (References / Symbols / Problems).
 def rowTable(g: Gui, id: str, header: str, rows: List(str))
@@ -1726,30 +1726,30 @@ def view(g: Gui, m: Model)
             g.field("line", m.goto_text, def(s: str): Msg
                 return Msg.set_goto_text(s)
             )
-            g.action("Go", Msg.goto_line)
+            g.button("Go", Msg.goto_line)
             g.field("open by name", m.open_text, def(s: str): Msg
                 return Msg.set_open_text(s)
             )
-            g.action("Open", Msg.quick_open)
+            g.button("Open", Msg.quick_open)
             g.field("find", m.find_text, def(s: str): Msg
                 return Msg.set_find_text(s)
             )
-            g.action("Find next", Msg.find_next)
+            g.button("Find next", Msg.find_next)
             g.field("replace", m.replace_text, def(s: str): Msg
                 return Msg.set_replace_text(s)
             )
-            g.action("Replace", Msg.replace_one)
+            g.button("Replace", Msg.replace_one)
             g.field("new name", m.new_name, def(s: str): Msg
                 return Msg.set_new_name(s)
             )
-            g.action("Rename", Msg.rename)
+            g.button("Rename", Msg.rename)
             # Tools: the manifest's process plugins stay buttons -- a reload can change
             # them, and a menubar is fixed at the first render
             if m.manifest as mft
                 var tools: List(ToolSpec) = mft.buttons()
                 var ti: int = 0
                 while ti < tools.len
-                    g.action(tools.at(ti).label, Msg.run_tool(ti))
+                    g.button(tools.at(ti).label, Msg.run_tool(ti))
                     ti = ti + 1
         # tab strip (09-16): one uiTab page per open file, keyed by PATH, holding
         # nothing -- the ONE Scintilla below shows the current document. Pages follow
@@ -1787,26 +1787,26 @@ def view(g: Gui, m: Model)
                 var act_ref: int = g.tableActivatedRow("##refs")
                 if act_ref >= 0
                     g.send(Msg.jump_ref(act_ref))
-                g.action("Jump to reference", Msg.jump_ref(g.tableSelectedRow("##refs")))
+                g.button("Jump to reference", Msg.jump_ref(g.tableSelectedRow("##refs")))
                 rowTable(g, "##syms", "Symbols", m.sym_rows)
                 var act_sym: int = g.tableActivatedRow("##syms")
                 if act_sym >= 0
                     g.send(Msg.jump_sym(act_sym))
-                g.action("Jump to symbol", Msg.jump_sym(g.tableSelectedRow("##syms")))
+                g.button("Jump to symbol", Msg.jump_sym(g.tableSelectedRow("##syms")))
                 rowTable(g, "##problems", "Problems", m.problem_rows)
                 var act_prob: int = g.tableActivatedRow("##problems")
                 if act_prob >= 0
                     g.send(Msg.jump_problem(act_prob))
-                g.action("Jump to problem", Msg.jump_problem(g.tableSelectedRow("##problems")))
+                g.button("Jump to problem", Msg.jump_problem(g.tableSelectedRow("##problems")))
         using g.hbox("##bottom", false)
             using g.vbox("##gatesbox", true)
                 g.text("Build / gates")
                 m.gate_pane!.render(g, "##gates", 0, 0)
-                g.action("Jump to diagnostic", Msg.jump_diag)
+                g.button("Jump to diagnostic", Msg.jump_diag)
             using g.vbox("##testsbox", true)
                 g.text("Tests")
                 m.tests_pane!.render(g, "##tests", 0, 0)
-                g.action("Jump to test", Msg.jump_test)
+                g.button("Jump to test", Msg.jump_test)
             using g.vbox("##dbgbox", true)
                 g.text("Debugger")
                 m.dbg_pane!.render(g, "##dbg", 0, 0)
