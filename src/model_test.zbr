@@ -156,4 +156,25 @@ def main()
     assert m5 == m and m.run != nil
     drain(m)
     assert paneText(m).contains("ran-from-ide"), "run output missing: " + paneText(m)
+    # Run tests with coverage (09-23): the same two-run queue with --coverage on the
+    # second, then the JSON the tests wrote beside the file fills the Coverage pane and
+    # colours the buffer -- a branch that never ran must come out red, one that ran green
+    setEditorText(m, "def pick(n: int): int\n    if n > 10\n        return 1\n    return 2\n\ndef test_small()\n    assert pick(3) == 2\n")
+    var m7: Model = update(m, Msg.run_tests_coverage)
+    assert m7 == m and m.run != nil, "coverage run should queue a --list"
+    drain(m)
+    assert m.tests!.cases.len == 1 and m.tests!.cases.at(0).status == "pass", "the test itself: " + m.status
+    assert paneText(m).contains("--coverage"), "the run must carry --coverage: " + paneText(m)
+    assert m.coverage != nil, "the report was not loaded: " + m.status
+    assert m.status.startsWith("coverage "), m.status
+    assert m.cov_rows.len == 2 and m.cov_rows.at(1).endsWith("total"), "rows: " + m.cov_rows.join(" | ")
+    var cf = m.coverage!.forPath(tf)
+    assert cf != nil, "the suite's own file must be in the report"
+    assert cf!.total() == 4 and cf!.covered == 3, "4 statements, 3 ran: " + cf!.covered.toString() + "/" + cf!.total().toString()
+    assert cf!.firstUncovered() == 3, "the untaken arm is line 3: " + cf!.firstUncovered().toString()
+    # The line colours themselves (MARKER_COVERED / MARKER_UNCOVERED on lines 2 and 3)
+    # cannot be asserted here: the tui hatch answers 0 to every SCI_MARKERGET, so a
+    # check would pass vacuously. They are the GTK witness's job (README, item 5c).
+    update(m, Msg.clear_coverage)
+    assert m.coverage == nil and m.cov_rows.len == 0, "clear removes the report"
     print("model_test: ok")

@@ -40,10 +40,11 @@ use lsp exposing LspClient, LspLocation, LspDiagnostic, jsonEscape
 use buffers exposing Buffer, BufferSet, uriOf, pathOfUri, langOf, baseName
 use gates exposing Manifest, GateSpec, GateRun, Diag, ToolSpec, loadManifest, joinPath, expandTool, toolUsesFile, dirOf
 use tests exposing TestSuite, parseListOutput, applyRunOutput, applyListFailure, renderSuite, summaryOf, listSpec, runSpec, inheritVerdicts
+use coverage exposing CoverageReport, FileCov, parseCoverage, coverageRows, coverageSummary
 use dap exposing DapClient, DapFrame, DapVar, DapScope
 use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener, wordAt
 use keys exposing shortcutAction, shortcutList, Shortcut, registerShortcuts, registerWindowShortcuts
-use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE
+use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE, SC_MARK_BACKGROUND, SCI_MARKERSETALPHA, SCI_MARKERSETLAYER, SC_LAYER_UNDER_TEXT
 
 # ── Constants of this program ──────────────────────────────────────────────
 const INDIC_ERROR: int = 8          # indicator slots 8..31 are free for containers
@@ -56,6 +57,8 @@ const STYLE_ANNOT: int = 40         # style slot for inline diagnostic annotatio
 const MARKER_BOOKMARK: int = 3      # "Toggle bookmark" button
 const MARKER_BREAK: int = 0         # toggled by clicking the marker margin; sent to the debugger
 const MARKER_CURRENT: int = 4       # the debugger's current line
+const MARKER_COVERED: int = 5       # coverage (09-23): line backgrounds, not margin symbols
+const MARKER_UNCOVERED: int = 6
 
 class Model
     var editor: CodeEditor? = nil
@@ -108,6 +111,12 @@ class Model
     var tests_lines: List(str)
     var tests_jumps: List(int)
     var tests_only: List(str)            # the subset the queued run covers ("" = all)
+    var tests_cov: bool = false          # the queued run was asked for --coverage
+    # coverage (coverage.zbr, 09-23): the last zebra-coverage.json, its pane rows, and
+    # the file the run belonged to (its directory is where the JSON lands)
+    var coverage: CoverageReport? = nil
+    var cov_rows: List(str)
+    var cov_dir: str = ""
     # problems (09-09): the current buffer's diagnostics as a jumpable list — the
     # squiggles, in order, with the message readable without hovering
     var problem_lines: List(int)         # pane line → source line (0-based), -1 for a header
@@ -154,6 +163,7 @@ class Model
         .tests_lines = List(str)()
         .tests_jumps = List(int)()
         .tests_only = List(str)()
+        .cov_rows = List(str)()
         .problem_lines = List(int)()
         .problem_cols = List(int)()
 
@@ -189,6 +199,9 @@ union Msg
     replace_all
     run_file            # `zebra <current file>`, output in the gates pane (Ctrl+R)
     run_tests           # `zebra test` on the current file, structured in the tests pane
+    run_tests_coverage  # the same with --coverage; the JSON feeds the Coverage pane + line colours
+    jump_cov: int       # the Coverage table row: open that file at its first uncovered line
+    clear_coverage
     rerun_failed_tests  # `zebra test --only <the failed ones>`
     jump_test
     jump_problem: int
@@ -233,13 +246,29 @@ def configureOverlay(ed: CodeEditor)
     ed.sci(SCI_MARKERSETFORE, MARKER_WARN, 0x4fb8e0)
     ed.sci(SCI_SETMARGINTYPEN, MARGIN_MARKS, SC_MARGIN_SYMBOL)
     ed.sci(SCI_SETMARGINWIDTHN, MARGIN_MARKS, 16)
-    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 31)           # bits for markers 0..4
+    # bits for markers 0..6. The coverage markers (5, 6) are SC_MARK_BACKGROUND, which
+    # Scintilla draws in the TEXT AREA -- but only for a marker that is in SOME margin's
+    # mask (ViewStyle: maskDrawInText = maskDefinedMarkers & background bits); a
+    # background marker outside every mask draws nowhere. Found by bisecting the first
+    # witness, which had 31 here and 31 markers in the document and no colour (09-23).
+    ed.sci(SCI_SETMARGINMASKN, MARGIN_MARKS, 127)
     ed.sci(SCI_SETMARGINSENSITIVEN, MARGIN_MARKS, 1)       # clicks arrive as SCN_MARGINCLICK
     ed.sci(SCI_MARKERDEFINE, MARKER_BOOKMARK, SC_MARK_BOOKMARK)
     ed.sci(SCI_MARKERSETBACK, MARKER_BOOKMARK, 0xc2b656)
     ed.sci(SCI_MARKERDEFINE, MARKER_BREAK, SC_MARK_CIRCLE)
     ed.sci(SCI_MARKERSETBACK, MARKER_BREAK, 0x3030d0)      # red dot
     ed.sci(SCI_MARKERSETFORE, MARKER_BREAK, 0x3030d0)
+    # coverage: a tinted background per line, alpha so the syntax colours stay readable
+    ed.sci(SCI_MARKERDEFINE, MARKER_COVERED, SC_MARK_BACKGROUND)
+    ed.sci(SCI_MARKERSETBACK, MARKER_COVERED, 0x60c060)     # green (0xBBGGRR)
+    ed.sci(SCI_MARKERSETALPHA, MARKER_COVERED, 45)
+    # under the text but OVER the style backgrounds: on the base layer the dark theme's
+    # per-style backgrounds paint straight over a background marker (first witness: nothing)
+    ed.sci(SCI_MARKERSETLAYER, MARKER_COVERED, SC_LAYER_UNDER_TEXT)
+    ed.sci(SCI_MARKERDEFINE, MARKER_UNCOVERED, SC_MARK_BACKGROUND)
+    ed.sci(SCI_MARKERSETBACK, MARKER_UNCOVERED, 0x5050e0)   # red
+    ed.sci(SCI_MARKERSETALPHA, MARKER_UNCOVERED, 55)
+    ed.sci(SCI_MARKERSETLAYER, MARKER_UNCOVERED, SC_LAYER_UNDER_TEXT)
     ed.sci(SCI_MARKERDEFINE, MARKER_CURRENT, SC_MARK_ARROW)
     ed.sci(SCI_MARKERSETBACK, MARKER_CURRENT, 0x40d0f0)    # yellow arrow
     ed.sci(SCI_MARKERSETFORE, MARKER_CURRENT, 0x40d0f0)
@@ -439,6 +468,7 @@ def showBuffer(m: Model, i: int)
         if c2.diagnostics.get(b.uri) as ds
             applyDiagnostics(m, ds)
             c2.diagnostics.remove(b.uri)
+    coverageApply(m)
 
 def switchTo(m: Model, i: int)
     if i < 0 or i >= m.bufs.count() or i == m.bufs.current
@@ -491,6 +521,7 @@ def openFile(m: Model, p: str): bool
     else
         m.status = "opened " + baseName(p) + " (" + b.lang + ": colouring only)"
     runHooks(m, "open")
+    coverageApply(m)
     return true
 
 def closeCurrent(m: Model)
@@ -533,6 +564,8 @@ def shortcutMsg(k: int, debugging: bool): Msg?
         return Msg.run_tests
     if a == "rerun_failed"
         return Msg.rerun_failed_tests
+    if a == "coverage"
+        return Msg.run_tests_coverage
     if a == "goto_line"
         return Msg.goto_line
     if a == "debug"
@@ -850,6 +883,9 @@ def testsRefresh(m: Model)
 
 # Save first when dirty (the compiler reads the disk), then queue the --list.
 def startTests(m: Model, only: List(str))
+    startTestsCov(m, only, false)
+
+def startTestsCov(m: Model, only: List(str), cov: bool)
     if m.run != nil
         m.status = "a gate is still running"
         return
@@ -870,6 +906,8 @@ def startTests(m: Model, only: List(str))
         if not keep
             m.tests = TestSuite(b.path)
         m.tests_only = only
+        m.tests_cov = cov
+        m.cov_dir = dirOf(b.path)
         var spec: GateSpec = listSpec(compilerPath(), baseName(b.path), dirOf(b.path))
         m.tool_nodiags.put(spec.tag, true)       # a --list refusal is reported in the tests pane, not as markers
         paneClear(m)
@@ -887,15 +925,77 @@ def testsListDone(m: Model, r: GateRun)
                 inheritVerdicts(fresh, t)
             m.tests = fresh
             if fresh.cases.len > 0
-                m.queue.add(runSpec(compilerPath(), baseName(t.file), dirOf(t.file), m.tests_only))
+                var rs: GateSpec = runSpec(compilerPath(), baseName(t.file), dirOf(t.file), m.tests_only)
+                if m.tests_cov
+                    rs = withCoverage(rs)
+                m.queue.add(rs)
         else
             applyListFailure(t, r.output)
         testsRefresh(m)
+
+# ── coverage (09-23) ──────────────────────────────────────────────────────────
+# The same runSpec with --coverage in front of the file: the compiler writes
+# zebra-coverage.json into the run's cwd (the file's directory) when the tests exit.
+def withCoverage(spec: GateSpec): GateSpec
+    var argv: List(str) = List(str)()
+    var i: int = 0
+    while i < spec.argv.len
+        if i == spec.argv.len - 1
+            argv.add("--coverage")
+        argv.add(spec.argv.at(i))
+        i = i + 1
+    return GateSpec(name: spec.name + " --coverage", argv: argv, cwd: spec.cwd, expect: spec.expect, skip: spec.skip, timeout_ms: spec.timeout_ms, tag: spec.tag)
+
+def loadCoverage(m: Model, path: str)
+    if not File.exists(path)
+        m.status = "coverage: " + path + " was not written"
+        return
+    if parseCoverage(File.read(path)) as r
+        m.coverage = r
+        m.cov_rows = coverageRows(r)
+        m.status = coverageSummary(r)
+        coverageApply(m)
+    else
+        m.status = "coverage: " + path + " is not a coverage file"
+
+def coverageClear(ed: CodeEditor)
+    ed.sci(SCI_MARKERDELETEALL, MARKER_COVERED, 0)
+    ed.sci(SCI_MARKERDELETEALL, MARKER_UNCOVERED, 0)
+
+# Colour the CURRENT buffer from the last report: every instrumented line green or red,
+# lines that are not statements untouched. Markers live in the Scintilla document, so a
+# buffer keeps its colours while hidden; a buffer with no record in the report is cleared.
+def coverageApply(m: Model)
+    if m.coverage as r
+        if m.bufs.cur() as b
+            var ed: CodeEditor = m.editor!
+            coverageClear(ed)
+            if r.forPath(b.path) as f
+                var i: int = 0
+                while i < f.lines.len
+                    ed.sci(SCI_MARKERADD, f.lines.at(i) - 1, if(f.counts.at(i) > 0, MARKER_COVERED, MARKER_UNCOVERED))
+                    i = i + 1
+
+# A Coverage row activated: open that file (the JSON's path is relative to the run's
+# directory) and go to its first uncovered line; the total row goes nowhere.
+def jumpCoverage(m: Model, row: int)
+    if m.coverage as r
+        if row >= 0 and row < r.files.len
+            var f: FileCov = r.files.at(row)
+            var p: str = f.path
+            if not File.exists(p)
+                p = joinPath(m.cov_dir, f.path)
+            if openFile(m, p)
+                var first: int = f.firstUncovered()
+                if first > 0
+                    gotoLineCol(m.editor!, first - 1, 0)
 
 def testsRunDone(m: Model, r: GateRun)
     if m.tests as t
         applyRunOutput(t, r.output, m.tests_only)
         testsRefresh(m)
+        if m.tests_cov
+            loadCoverage(m, joinPath(m.cov_dir, "zebra-coverage.json"))
 
 # `zebra FILE` on the current buffer: save when dirty, run in the file's directory,
 # output (and any compile diagnostics, marked) in the gates pane.
@@ -1199,6 +1299,8 @@ def tick(m: Model)
                 if dc0.state == "stopped"
                     dc0.setBreakpoints(cb0.path, markerLines(m.editor!, MARKER_BREAK))
     var modified: bool = m.editor!.takeModified()
+    if modified and m.coverage != nil
+        coverageClear(m.editor!)     # an edited buffer's colours would lie
     pollGates(m)
     pollDebug(m)
     if m.servers.count() == 0
@@ -1476,6 +1578,18 @@ def update(m: Model, msg: Msg): Model
         on Msg.run_tests
             startTests(m, List(str)())
             return m
+        on Msg.run_tests_coverage
+            startTestsCov(m, List(str)(), true)
+            return m
+        on Msg.jump_cov as ci
+            jumpCoverage(m, ci)
+            return m
+        on Msg.clear_coverage
+            m.coverage = nil
+            m.cov_rows = List(str)()
+            coverageClear(m.editor!)
+            m.status = "coverage cleared"
+            return m
         on Msg.rerun_failed_tests
             if m.tests as t
                 var fl: List(str) = t.failedLabels()
@@ -1701,6 +1815,8 @@ def view(g: Gui, m: Model)
     g.menuSeparator()
     g.menuItem("Run tests", Msg.run_tests)
     g.menuItem("Re-run failed tests", Msg.rerun_failed_tests)
+    g.menuItem("Run tests with coverage", Msg.run_tests_coverage)
+    g.menuItem("Clear coverage", Msg.clear_coverage)
     g.endMenu()
     g.beginMenu("Debug")
     g.menuItem("Toggle breakpoint", Msg.toggle_breakpoint)
@@ -1798,6 +1914,11 @@ def view(g: Gui, m: Model)
                 if act_prob >= 0
                     g.send(Msg.jump_problem(act_prob))
                 g.button("Jump to problem", Msg.jump_problem(g.tableSelectedRow("##problems")))
+                rowTable(g, "##coverage", "Coverage", m.cov_rows)
+                var act_cov: int = g.tableActivatedRow("##coverage")
+                if act_cov >= 0
+                    g.send(Msg.jump_cov(act_cov))
+                g.button("Run tests with coverage", Msg.run_tests_coverage)
         using g.hbox("##bottom", false)
             using g.vbox("##gatesbox", true)
                 g.text("Build / gates")

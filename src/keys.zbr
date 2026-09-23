@@ -38,6 +38,7 @@ def shortcutList(): List(Shortcut)
     out.add(Shortcut(vk: 0x52, mods: KEY_CTRL, action: "run", label: "Ctrl+R"))                      # run the current file
     out.add(Shortcut(vk: 0x54, mods: KEY_CTRL + KEY_SHIFT, action: "tests", label: "Ctrl+Shift+T"))  # Ctrl+T is Scintilla's line-transpose
     out.add(Shortcut(vk: 0x52, mods: KEY_CTRL + KEY_SHIFT, action: "rerun_failed", label: "Ctrl+Shift+R"))
+    out.add(Shortcut(vk: 0x43, mods: KEY_CTRL + KEY_SHIFT, action: "coverage", label: "Ctrl+Shift+C"))   # Ctrl+C is Scintilla's copy
     out.add(Shortcut(vk: 0x47, mods: KEY_CTRL, action: "goto_line", label: "Ctrl+G"))      # focus is the input's job; the chord runs the jump
     out.add(Shortcut(vk: VK_F5, mods: 0, action: "debug", label: "F5"))            # continue while debugging
     out.add(Shortcut(vk: VK_F5, mods: KEY_SHIFT, action: "stop", label: "Shift+F5"))

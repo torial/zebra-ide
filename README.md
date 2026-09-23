@@ -4,21 +4,9 @@ A lightweight IDE for Zebra, C and Zig, written in Zebra, on libui-ng + Scintill
 talking to `zebra lsp` and `zebra debug`. Everything the IDE does beyond editing also
 runs headless (`tools/check.sh`), so a window is never the only witness.
 
-Status 2026-09-23: plan phases P0–P4 are landed and pass every headless gate in a
-Linux container, and since Scintilla builds on GTK (zig-libui-ng 4c6c87dd) the IDE
-**runs with a window on Linux**: under Xvfb in the container, items 1–3 of the checklist
-below are witnessed (colouring, the LSP round trip, Ctrl+S with the focus in the editor
-and in an entry, Ctrl+W, F9 and a margin click). **Nothing has yet been run on Windows
-with a window open.** The first-run checklist is written for exactly that moment.
-
-## Run (Linux)
-
-```
-ZEBRA_LIBUI_PATH=/path/to/zig-libui-ng zebra --gui-backend=libui_ng src/ide.zbr -- src/lsp.zbr
-```
-
-The same program; GTK draws it. The generated project links Scintilla's GTK layer
-from the fork, so the fork checkout (or the pinned one, once bumped) must have it.
+Status 2026-09-08: plan phases P0–P4 are landed and pass every headless gate in a
+Linux container. **Nothing has yet been run on Windows with a window open.** The
+first-run checklist below is written for exactly that moment.
 
 ## Prerequisites (Windows laptop)
 
@@ -74,6 +62,15 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    `N/M passed`; put the caret on a ✗ line and **Jump to test** lands on the failing
    assert; **Re-run failed** runs only those (`zebra test --only …`). **Run** (Ctrl+R)
    runs the current file and shows its output in the gates pane.
+5c. **Run tests with coverage** (Ctrl+Shift+C, or the button under the Coverage pane,
+   2026-09-23) → the same run with `zebra test --coverage`; when it exits, the Coverage
+   pane lists every file the run touched with `NN%  covered/statements  file` and a
+   total, the status line says `coverage NN% (...)`, and the editor tints every
+   statement line green (ran) or red (never ran) -- declaration lines, comments and
+   blanks stay plain, because they are not statements. Double-click a Coverage row to
+   open that file at its first uncovered line. Editing a buffer clears its colours (they
+   would lie); **Clear coverage** in the Build menu drops the report. Witnessed on GTK:
+   `coverage.zbr` at 97% with the one untaken arm red.
 6. Put the caret on a line in a small program and press **Breakpoint** or F9 (the
    margin click and F9 need the bridge from step 3), then **Debug** or F5 → yellow
    arrow on that line, frames in the debugger pane; Next
@@ -111,6 +108,7 @@ window itself has none and has never been opened.
 - Keyboard shortcuts (09-08, needs the zig-libui-ng key shim → the pin bump): Ctrl+S
   save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, Ctrl+R run
   the current file, Ctrl+Shift+T run its tests, Ctrl+Shift+R re-run the failed ones,
+  Ctrl+Shift+C run them with coverage,
   Ctrl+G go to the line typed in the `line` box,
   F5 debug / continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11
   step out, F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks

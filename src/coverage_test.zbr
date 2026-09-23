@@ -1,0 +1,48 @@
+# coverage_test.zbr — the Coverage pane's arithmetic and rows against a literal
+# zebra-coverage.json (no process, no window). `zebra test src/coverage_test.zbr`.
+use coverage exposing CoverageReport, FileCov, parseCoverage, coverageRows, coverageSummary, baseOf
+
+def sample(): str
+    return "{\"version\": 1, \"files\": {\"helper.zbr\": {\"lines\": {\"3\": 3, \"6\": 0}}, \"cov_main.zbr\": {\"lines\": {\"12\": 1, \"4\": 1, \"5\": 0, \"7\": 1}}}}"
+
+def test_parse_counts_and_denominator()
+    if parseCoverage(sample()) as r
+        assert r.files.len == 2
+        assert r.total == 6 and r.covered == 4, "4 of 6 statements ran: " + r.covered.toString() + "/" + r.total.toString()
+        assert r.percent() == 66
+        if r.forPath("cov_main.zbr") as f
+            assert f.total() == 4 and f.covered == 3 and f.percent() == 75
+            assert f.lines.at(0) == 4 and f.lines.at(3) == 12, "lines sorted ascending whatever order the file used"
+            assert f.firstUncovered() == 5
+        else
+            assert false, "cov_main.zbr missing"
+        if r.forPath("helper.zbr") as h
+            assert h.firstUncovered() == 6
+        else
+            assert false, "helper.zbr missing"
+    else
+        assert false, "sample did not parse"
+
+def test_path_matching_by_base_name()
+    if parseCoverage(sample()) as r
+        assert r.forPath("C:\\Projects\\x\\src\\helper.zbr") != nil, "a buffer's full path matches the JSON's relative one by base name"
+        assert r.forPath("/home/x/cov_main.zbr") != nil
+        assert r.forPath("other.zbr") == nil
+    assert baseOf("a/b/c.zbr") == "c.zbr" and baseOf("c.zbr") == "c.zbr" and baseOf("a\\b.zbr") == "b.zbr"
+
+def test_rows_and_summary()
+    if parseCoverage(sample()) as r
+        var rows: List(str) = coverageRows(r)
+        assert rows.len == 3
+        assert rows.at(0) == "50%  1/2  helper.zbr", rows.at(0)
+        assert rows.at(1) == "75%  3/4  cov_main.zbr", rows.at(1)
+        assert rows.at(2) == "66%  4/6  total", rows.at(2)
+        assert coverageSummary(r) == "coverage 66% (4/6 statements, 2 files)", coverageSummary(r)
+
+def test_not_a_coverage_file()
+    assert parseCoverage("not json") == nil
+    assert parseCoverage("{\"hello\": 1}") == nil
+    if parseCoverage("{\"version\": 1, \"files\": {}}") as e
+        assert e.total == 0 and e.percent() == 100 and coverageRows(e).len == 1
+    else
+        assert false, "an empty files object is a report with nothing in it"

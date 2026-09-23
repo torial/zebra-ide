@@ -1,0 +1,121 @@
+# coverage.zbr — the compiler's zebra-coverage.json, read for the Coverage pane and the
+# editor's line colouring (2026-09-23). Pure: no process, no window, so coverage_test
+# can check the arithmetic and the rows against a literal file.
+#
+# The file (zebra-language, `--coverage` / `zebra test --coverage`):
+#   {"version": 1, "files": {"<path>": {"lines": {"<line>": <count>, ...}}, ...}}
+# The key set of `lines` IS the instrumented set (the denominator); a line absent from
+# it is not a statement. Paths are as the compiler spelled them -- relative to the cwd
+# the program ran in, forward slashes -- so the IDE matches a buffer by BASE NAME when
+# the full path does not match (the tests run in the file's directory, so the JSON says
+# `lsp.zbr` where the buffer says `C:\Projects\zebra-ide\src\lsp.zbr`).
+
+class FileCov
+    var path: str = ""
+    var lines: List(int)       # instrumented lines, ascending
+    var counts: List(int)      # parallel to lines
+    var covered: int = 0
+
+    cue init(path: str)
+        .path = path
+        .lines = List(int)()
+        .counts = List(int)()
+
+    def total(): int
+        return .lines.len
+
+    def percent(): int
+        if .lines.len == 0
+            return 100
+        return (.covered * 100) / .lines.len
+
+    # the first instrumented line that never ran, 1-based; 0 when every line ran
+    def firstUncovered(): int
+        var i: int = 0
+        while i < .lines.len
+            if .counts.at(i) == 0
+                return .lines.at(i)
+            i = i + 1
+        return 0
+
+class CoverageReport
+    var files: List(FileCov)
+    var covered: int = 0
+    var total: int = 0
+
+    cue init()
+        .files = List(FileCov)()
+
+    def percent(): int
+        if .total == 0
+            return 100
+        return (.covered * 100) / .total
+
+    # the record for a buffer: exact path first, then the base name (see the header)
+    def forPath(path: str): FileCov?
+        for f in .files
+            if f.path == path
+                return f
+        var b: str = baseOf(path)
+        for f in .files
+            if baseOf(f.path) == b
+                return f
+        return nil
+
+def baseOf(p: str): str
+    var s: str = p.replace("\\", "/")
+    var i: int = s.len - 1
+    while i >= 0
+        if s[i] == '/'
+            return s[i + 1 .. s.len]
+        i = i - 1
+    return s
+
+# insertion sort by line: the compiler already writes them ascending, but a consumer
+# should not depend on a producer's ordering it never promised
+def insertSorted(f: FileCov, line: int, count: int)
+    var i: int = f.lines.len
+    f.lines.add(line)
+    f.counts.add(count)
+    while i > 0 and f.lines.at(i - 1) > line
+        f.lines[i] = f.lines.at(i - 1)
+        f.counts[i] = f.counts.at(i - 1)
+        i = i - 1
+    f.lines[i] = line
+    f.counts[i] = count
+
+# nil when the text is not a coverage file (no `files` object); an empty report when it
+# is one with nothing in it
+def parseCoverage(text: str): CoverageReport?
+    if Json.parse(text) as root
+        var files: JsonValue = root.at("files")
+        var r: CoverageReport = CoverageReport()
+        var any: bool = false
+        for path in files.keys()
+            any = true
+            var f: FileCov = FileCov(path)
+            var lines: JsonValue = files.at(path).at("lines")
+            for k in lines.keys()
+                var line: int = k.toInt()
+                var count: int = lines.getInt(k)
+                if line > 0
+                    insertSorted(f, line, count)
+                    if count > 0
+                        f.covered = f.covered + 1
+            r.files.add(f)
+            r.covered = r.covered + f.covered
+            r.total = r.total + f.lines.len
+        if any or root.keys().contains("files")
+            return r
+    return nil
+
+# the Coverage pane's rows: one per file plus a total, the shape rowTable takes
+def coverageRows(r: CoverageReport): List(str)
+    var rows: List(str) = List(str)()
+    for f in r.files
+        rows.add(f.percent().toString() + "%  " + f.covered.toString() + "/" + f.total().toString() + "  " + baseOf(f.path))
+    rows.add(r.percent().toString() + "%  " + r.covered.toString() + "/" + r.total.toString() + "  total")
+    return rows
+
+def coverageSummary(r: CoverageReport): str
+    return "coverage " + r.percent().toString() + "% (" + r.covered.toString() + "/" + r.total.toString() + " statements, " + r.files.len.toString() + " files)"
