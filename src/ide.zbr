@@ -44,6 +44,7 @@ use coverage exposing CoverageReport, FileCov, parseCoverage, coverageRows, cove
 use dap exposing DapClient, DapFrame, DapVar, DapScope
 use textops exposing applyEdits, applyWorkspaceEditToDisk, symbolLines, indentFor, isBlockOpener, wordAt
 use keys exposing shortcutAction, shortcutList, Shortcut, registerShortcuts, registerWindowShortcuts
+use icons exposing registerIdeIcons
 use sci exposing SCI_GOTOPOS, SCI_GOTOLINE, SCI_GETCURRENTPOS, SCI_LINEFROMPOSITION, SCI_GETCOLUMN, SCI_POSITIONFROMLINE, SCI_GETLENGTH, SCI_INDICSETSTYLE, SCI_INDICSETFORE, SCI_SETINDICATORCURRENT, SCI_INDICATORFILLRANGE, SCI_INDICATORCLEARRANGE, SCI_MARKERDEFINE, SCI_MARKERSETBACK, SCI_MARKERSETFORE, SCI_MARKERADD, SCI_MARKERDELETEALL, SCI_SETMARGINWIDTHN, SCI_SETMARGINTYPEN, SCI_SETMARGINMASKN, SCI_SETSAVEPOINT, SCI_GETMODIFY, SCI_ANNOTATIONSETTEXT, SCI_ANNOTATIONSETSTYLE, SCI_ANNOTATIONCLEARALL, SCI_ANNOTATIONSETVISIBLE, SCI_SCROLLCARET, SCI_STYLESETFORE, SCI_STYLESETBACK, SCI_STYLESETITALIC, INDIC_SQUIGGLE, SC_MARK_SHORTARROW, SC_MARK_CIRCLE, SC_MARK_BOOKMARK, SC_MARGIN_SYMBOL, ANNOTATION_BOXED, SCI_REPLACESEL, SCI_MARKERNEXT, SCI_MARKERGET, SCI_MARKERDELETE, SCI_SETMARGINSENSITIVEN, SCI_GETLINECOUNT, SCI_CREATEDOCUMENT, SCI_ADDREFDOCUMENT, SCI_RELEASEDOCUMENT, SCI_GETDOCPOINTER, SCI_SETDOCPOINTER, SCI_GETFIRSTVISIBLELINE, SCI_SETFIRSTVISIBLELINE, SCI_EMPTYUNDOBUFFER, SC_MARK_ARROW, SCI_SETTARGETSTART, SCI_SETTARGETEND, SCI_SEARCHINTARGET, SCI_REPLACETARGET, SCI_SETSEARCHFLAGS, SCI_SETSEL, SCI_GETSELECTIONSTART, SCI_GETSELECTIONEND, SCFIND_MATCHCASE, SC_MARK_BACKGROUND, SCI_MARKERSETALPHA, SCI_MARKERSETLAYER, SC_LAYER_UNDER_TEXT
 
 # ── Constants of this program ──────────────────────────────────────────────
@@ -1830,6 +1831,39 @@ def view(g: Gui, m: Model)
     g.menuSeparator()
     g.menuItem("Jump to frame", Msg.jump_frame)
     g.endMenu()
+    # the toolbar (09-23): the build/run/test/coverage row and the debug row, with the
+    # manifest's process plugins after them -- a toolbar is rebuilt when its set changes,
+    # so a reload that changes the tools is fine here where it was not in the menubar.
+    # Icons are icons.zbr's glyphs, registered in main(). The debug items follow the
+    # session: Start alone while none runs, the stepping set while one does.
+    g.beginToolbar()
+    g.toolIcon("Build", "ide.build", "Build the project (Ctrl+B)", Msg.build)
+    g.toolIcon("Run", "ide.run", "Run the current file (Ctrl+R)", Msg.run_file)
+    g.toolIcon("Tests", "ide.tests", "Run the tests (Ctrl+Shift+T)", Msg.run_tests)
+    g.toolIcon("Coverage", "ide.coverage", "Run the tests with coverage (Ctrl+Shift+C)", Msg.run_tests_coverage)
+    g.toolSeparator()
+    var debugging: bool = m.dbg != nil
+    g.toolEnabled(not debugging)
+    g.toolIcon("Debug", "ide.debug", "Start debugging (F5)", Msg.debug_start)
+    g.toolEnabled(debugging)
+    g.toolIcon("Continue", "ide.continue", "Continue (F5)", Msg.debug_continue)
+    g.toolEnabled(debugging)
+    g.toolIcon("Next", "ide.next", "Step over (F10)", Msg.debug_next)
+    g.toolEnabled(debugging)
+    g.toolIcon("Step in", "ide.stepin", "Step into (F11)", Msg.debug_step_in)
+    g.toolEnabled(debugging)
+    g.toolIcon("Step out", "ide.stepout", "Step out (Shift+F11)", Msg.debug_step_out)
+    g.toolEnabled(debugging)
+    g.toolIcon("Stop", "ide.stop", "Stop debugging (Shift+F5)", Msg.debug_stop)
+    if m.manifest as tmft
+        var ttools: List(ToolSpec) = tmft.buttons()
+        if ttools.len > 0
+            g.toolSeparator()
+        var tti: int = 0
+        while tti < ttools.len
+            g.tool(ttools.at(tti).label, Msg.run_tool(tti))
+            tti = tti + 1
+    g.endToolbar()
     # File > Open… asked last update; the dialog belongs to the view (it needs the window)
     if m.want_open
         m.want_open = false
@@ -1859,14 +1893,7 @@ def view(g: Gui, m: Model)
                 return Msg.set_new_name(s)
             )
             g.button("Rename", Msg.rename)
-            # Tools: the manifest's process plugins stay buttons -- a reload can change
-            # them, and a menubar is fixed at the first render
-            if m.manifest as mft
-                var tools: List(ToolSpec) = mft.buttons()
-                var ti: int = 0
-                while ti < tools.len
-                    g.button(tools.at(ti).label, Msg.run_tool(ti))
-                    ti = ti + 1
+            # (the manifest's process plugins moved to the toolbar, 09-23)
         # tab strip (09-16): one uiTab page per open file, keyed by PATH, holding
         # nothing -- the ONE Scintilla below shows the current document. Pages follow
         # the view (inserted in model order, removed when closed, renamed when the
@@ -1958,4 +1985,5 @@ def main()
     while ai < args.len
         startup_files.add(args.at(ai))
         ai = ai + 1
+    registerIdeIcons()
     Gui.run("zebra-ide", 1200, 800, ideInit, update, view)

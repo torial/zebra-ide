@@ -1,0 +1,29 @@
+# icons_test.zbr — the toolbar glyphs' byte arithmetic (no window). `zebra test src/icons_test.zbr`.
+use icons exposing glyph, buildGlyph, runGlyph, testsGlyph, coverageGlyph, debugGlyph, continueGlyph, nextGlyph, stepInGlyph, stepOutGlyph, stopGlyph
+
+def px(bytes: str, x: int, y: int, c: int): int
+    return bytes[(y * 12 + x) * 4 + c]
+
+def test_glyph_is_12x12_rgba()
+    var b: str = glyph(stopGlyph(), 0xC0, 0x40, 0x40)
+    assert b.len == 12 * 12 * 4, "12x12x4 bytes: " + b.len.toString()
+    assert px(b, 0, 0, 3) == 0, "corner transparent"
+    assert px(b, 5, 5, 3) == 255 and px(b, 5, 5, 0) == 0xC0 and px(b, 5, 5, 1) == 0x40, "centre painted in the colour"
+
+def test_every_glyph_is_square_and_nonempty()
+    var all: List(List(str)) = [buildGlyph(), runGlyph(), testsGlyph(), coverageGlyph(), debugGlyph(), continueGlyph(), nextGlyph(), stepInGlyph(), stepOutGlyph(), stopGlyph()]
+    for rows in all
+        assert rows.len == 12, "twelve rows"
+        var painted: int = 0
+        for row in rows
+            assert row.len == 12, "twelve columns: " + row
+            var x: int = 0
+            while x < 12
+                if row[x] == '#'
+                    painted = painted + 1
+                x = x + 1
+        assert painted > 10, "a glyph has pixels"
+
+def test_short_rows_are_transparent()
+    var b: str = glyph(["##"], 1, 2, 3)
+    assert px(b, 0, 0, 3) == 255 and px(b, 2, 0, 3) == 0 and px(b, 0, 1, 3) == 0

@@ -1,0 +1,204 @@
+# icons.zbr -- the IDE's toolbar icons (2026-09-23), drawn as 12x12 glyphs: twelve rows of
+# twelve characters, `#` a painted pixel and `.` a transparent one, so a glyph reads as what
+# it is. `glyph` turns one into the straight-alpha RGBA bytes Gui.registerIcon takes; the
+# runtime has no image decoder yet, and these are small enough that decoding one would be
+# more code than drawing it. Pure: icons_test checks the byte arithmetic without a window.
+
+def glyph(rows: List(str), r: int, g: int, b: int): str
+    var sb = StringBuilder()
+    var y: int = 0
+    while y < 12
+        var row: str = if(y < rows.len, rows.at(y), "")
+        var x: int = 0
+        while x < 12
+            var lit: bool = x < row.len and row[x] == '#'
+            sb.appendChar(if(lit, r, 0))
+            sb.appendChar(if(lit, g, 0))
+            sb.appendChar(if(lit, b, 0))
+            sb.appendChar(if(lit, 255, 0))
+            x = x + 1
+        y = y + 1
+    return sb.build()
+
+# a hammer: head top-right, handle to the bottom-left
+def buildGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("......####..")
+    r.add(".....######.")
+    r.add("....########")
+    r.add("....######..")
+    r.add("...###.###..")
+    r.add("..###....#..")
+    r.add(".###........")
+    r.add("###.........")
+    r.add("##..........")
+    r.add("............")
+    r.add("............")
+    r.add("............")
+    return r
+
+# a play triangle
+def runGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add("..##........")
+    r.add("..####......")
+    r.add("..######....")
+    r.add("..########..")
+    r.add("..#########.")
+    r.add("..#########.")
+    r.add("..########..")
+    r.add("..######....")
+    r.add("..####......")
+    r.add("..##........")
+    r.add("............")
+    return r
+
+# a check mark
+def testsGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add("..........##")
+    r.add(".........###")
+    r.add("........###.")
+    r.add(".......###..")
+    r.add("##....###...")
+    r.add("###..###....")
+    r.add(".######.....")
+    r.add("..####......")
+    r.add("...##.......")
+    r.add("............")
+    r.add("............")
+    return r
+
+# three bars of different heights
+def coverageGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add("........###.")
+    r.add("........###.")
+    r.add("........###.")
+    r.add("....###.###.")
+    r.add("....###.###.")
+    r.add("....###.###.")
+    r.add("###.###.###.")
+    r.add("###.###.###.")
+    r.add("###.###.###.")
+    r.add("###.###.###.")
+    r.add("............")
+    return r
+
+# a ladybird-ish bug: body with a head
+def debugGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("....####....")
+    r.add("...######...")
+    r.add("..########..")
+    r.add(".#.######.#.")
+    r.add(".##########.")
+    r.add("..########..")
+    r.add(".##########.")
+    r.add(".#.######.#.")
+    r.add("..########..")
+    r.add("...######...")
+    r.add("....####....")
+    r.add("............")
+    return r
+
+# two play triangles
+def continueGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add(".##...##....")
+    r.add(".###..###...")
+    r.add(".####.####..")
+    r.add(".#####.####.")
+    r.add(".######.###.")
+    r.add(".######.###.")
+    r.add(".#####.####.")
+    r.add(".####.####..")
+    r.add(".###..###...")
+    r.add(".##...##....")
+    r.add("............")
+    return r
+
+# an arrow arching over a dot: step over
+def nextGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add("...#####....")
+    r.add("..##...##...")
+    r.add(".##.....##..")
+    r.add("##.......##.")
+    r.add(".........###")
+    r.add("........####")
+    r.add(".......#####")
+    r.add("............")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add("............")
+    return r
+
+# an arrow pointing down into a bar: step in
+def stepInGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add("..########..")
+    r.add("...######...")
+    r.add("....####....")
+    r.add(".....##.....")
+    r.add("............")
+    r.add("############")
+    r.add("############")
+    r.add("............")
+    return r
+
+# an arrow pointing up out of a bar: step out
+def stepOutGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add(".....##.....")
+    r.add("....####....")
+    r.add("...######...")
+    r.add("..########..")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add(".....##.....")
+    r.add("............")
+    r.add("############")
+    r.add("############")
+    r.add("............")
+    return r
+
+# a stop square
+def stopGlyph(): List(str)
+    var r: List(str) = List(str)()
+    r.add("............")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add(".##########.")
+    r.add("............")
+    return r
+
+# the names view() uses in g.toolIcon; registering before Gui.run is fine (queued)
+def registerIdeIcons()
+    Gui.registerIcon("ide.build", 12, 12, glyph(buildGlyph(), 0x50, 0x60, 0xB0))
+    Gui.registerIcon("ide.run", 12, 12, glyph(runGlyph(), 0x2E, 0xA8, 0x4E))
+    Gui.registerIcon("ide.tests", 12, 12, glyph(testsGlyph(), 0x2E, 0xA8, 0x4E))
+    Gui.registerIcon("ide.coverage", 12, 12, glyph(coverageGlyph(), 0xC8, 0x90, 0x20))
+    Gui.registerIcon("ide.debug", 12, 12, glyph(debugGlyph(), 0xB0, 0x40, 0x40))
+    Gui.registerIcon("ide.continue", 12, 12, glyph(continueGlyph(), 0x2E, 0xA8, 0x4E))
+    Gui.registerIcon("ide.next", 12, 12, glyph(nextGlyph(), 0x40, 0x70, 0xC0))
+    Gui.registerIcon("ide.stepin", 12, 12, glyph(stepInGlyph(), 0x40, 0x70, 0xC0))
+    Gui.registerIcon("ide.stepout", 12, 12, glyph(stepOutGlyph(), 0x40, 0x70, 0xC0))
+    Gui.registerIcon("ide.stop", 12, 12, glyph(stopGlyph(), 0xC0, 0x40, 0x40))

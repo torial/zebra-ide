@@ -8,6 +8,7 @@
 #   3b'. tests_test      the test runner vs the real compiler: `zebra test --list`
 #                        discovery, pass / raising fail / panicking crash / not-run
 #                        statuses and jump lines, a `--only` re-run (headless)
+#   3b'''. icons_test     the toolbar glyphs' byte arithmetic (headless)
 #   3b''. coverage_test  coverage.zbr against a literal zebra-coverage.json: counts, the
 #                        denominator, sorting, base-name matching, the pane rows (pure)
 #   3c. tools_test       process plugins: manifest `tools`, ${file}/${word} substitution, a real
@@ -48,6 +49,8 @@ step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep
 # coverage.zbr (09-23): the compiler's zebra-coverage.json read for the Coverage pane --
 # arithmetic, sorting, base-name matching and the rows, against a literal file (pure)
 step "coverage_test (zebra test)"; (cd src && "$ZEBRA" test coverage_test.zbr 2>&1 | grep -q "^4 passed, 0 failed") && echo PASS || { echo FAIL; fail=1; }
+# icons.zbr (09-23): the toolbar glyphs -> RGBA bytes, pure
+step "icons_test (zebra test)"; (cd src && "$ZEBRA" test icons_test.zbr 2>&1 | grep -q "^3 passed, 0 failed") && echo PASS || { echo FAIL; fail=1; }
 step "model_test (tui, headless Model)"; (cd src && rm -rf model_test_gui_tui && "$ZEBRA" --gui-backend=tui model_test.zbr 2>&1 | tail -1 | grep -q "model_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "dap_client_test"
 dap_out=$(cd src && "$ZEBRA" dap_client_test.zbr 2>&1 | tail -1)
