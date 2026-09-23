@@ -4,9 +4,21 @@ A lightweight IDE for Zebra, C and Zig, written in Zebra, on libui-ng + Scintill
 talking to `zebra lsp` and `zebra debug`. Everything the IDE does beyond editing also
 runs headless (`tools/check.sh`), so a window is never the only witness.
 
-Status 2026-09-08: plan phases P0–P4 are landed and pass every headless gate in a
-Linux container. **Nothing has yet been run on Windows with a window open.** The
-first-run checklist below is written for exactly that moment.
+Status 2026-09-23: plan phases P0–P4 are landed and pass every headless gate in a
+Linux container, and since Scintilla builds on GTK (zig-libui-ng 4c6c87dd) the IDE
+**runs with a window on Linux**: under Xvfb in the container, items 1–3 of the checklist
+below are witnessed (colouring, the LSP round trip, Ctrl+S with the focus in the editor
+and in an entry, Ctrl+W, F9 and a margin click). **Nothing has yet been run on Windows
+with a window open.** The first-run checklist is written for exactly that moment.
+
+## Run (Linux)
+
+```
+ZEBRA_LIBUI_PATH=/path/to/zig-libui-ng zebra --gui-backend=libui_ng src/ide.zbr -- src/lsp.zbr
+```
+
+The same program; GTK draws it. The generated project links Scintilla's GTK layer
+from the fork, so the fork checkout (or the pinned one, once bumped) must have it.
 
 ## Prerequisites (Windows laptop)
 
