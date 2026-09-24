@@ -125,10 +125,15 @@ class Model
     var goto_text: str = ""              # "Go to line" input
     var tab_shown: int = -1              # the tab strip's page index the model last put it on
     var want_open: bool = false          # File > Open… asked; the view owns the dialog
-    # Project explorer (09-17): the cwd's tree, folders expanded on click. Listings are
-    # cached in the model (a render must not touch the disk: it runs on every tick).
+    # Project explorer (09-17; a native tree since 09-24): the cwd's tree. Listings are
+    # cached in the model (a render must not touch the disk: it runs on every tick), and
+    # they run ONE LEVEL AHEAD of what is expanded: expanding a folder lists it and each
+    # of its subfolders, so every folder row the tree shows already holds its children
+    # (collapsed) -- a native tree draws an expander only for a row that has child rows,
+    # and a folder that is genuinely empty shows none, which is right.
     var explorer_root: str = "."
-    var explorer_open: HashMap(str, List(str))   # expanded dir -> its entries (dirs first, sorted)
+    var explorer_listed: HashMap(str, List(str))  # dir -> its entries (dirs first, sorted)
+    var explorer_open: HashMap(str, bool)          # the expanded set
     var explorer_shown: bool = true
     var open_text: str = ""              # "Open by name" input (searched under the project root)
     # debugger (dap.zbr): the session, the frames pane, and what we asked for
@@ -150,7 +155,8 @@ class Model
         .sym_lines = List(int)()
         .sym_rows = List(str)()
         .problem_rows = List(str)()
-        .explorer_open = HashMap(str, List(str))()
+        .explorer_listed = HashMap(str, List(str))()
+        .explorer_open = HashMap(str, bool)()
         .bufs = BufferSet()
         .servers = HashMap(str, LspClient)()
         .servers_tried = List(str)()
@@ -167,6 +173,11 @@ class Model
         .cov_rows = List(str)()
         .problem_lines = List(int)()
         .problem_cols = List(int)()
+
+# the explorer tree's expand/collapse: a variant carries one payload
+struct ExpandDir
+    var key: str
+    var open: bool
 
 union Msg
     tick
@@ -216,7 +227,8 @@ union Msg
     set_open_text: str
     set_find_text: str
     set_replace_text: str
-    toggle_dir: str     # explorer: expand or collapse a folder
+    explorer_pick: str          # explorer: a row selected or activated (a file opens)
+    explorer_expand: ExpandDir  # explorer: a folder expanded or collapsed
     toggle_explorer
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -606,7 +618,7 @@ def ideInit(): Model
     m.tests_pane!.setText("(Run tests: every def test_*() in the current file, via `zebra test`)")
     loadProject(m)
     m.explorer_root = "."
-    m.explorer_open.put(m.explorer_root, explorerList(m.explorer_root))
+    explorerExpand(m, m.explorer_root)
     startLsp(m)
     for p in startup_files
         openFile(m, p)
@@ -1435,11 +1447,16 @@ def update(m: Model, msg: Msg): Model
         on Msg.set_replace_text as s5
             m.replace_text = s5
             return m
-        on Msg.toggle_dir as dp
-            if m.explorer_open.get(dp) != nil
-                m.explorer_open.remove(dp)
+        on Msg.explorer_pick as pk
+            if not Dir.exists(pk)
+                if not openFile(m, pk)
+                    pass
+            return m
+        on Msg.explorer_expand as ex
+            if ex.open
+                explorerExpand(m, ex.key)
             else
-                m.explorer_open.put(dp, explorerList(dp))
+                m.explorer_open.remove(ex.key)
             return m
         on Msg.toggle_explorer
             m.explorer_shown = not m.explorer_shown
@@ -1730,28 +1747,36 @@ def explorerList(dir: str): List(str)
         out.add(f)
     return out
 
-# One folder of the explorer: a vbox keyed by the folder's path, one action per entry;
-# an expanded folder's box is inserted right under its row -- the tree core's insert-
-# mid-siblings path, exercised by real use rather than a smoke.
-def explorerDir(g: Gui, m: Model, dir: str, depth: int)
-    var pad: str = ""
-    var i: int = 0
-    while i < depth
-        pad = pad + "   "
-        i = i + 1
-    if m.explorer_open.get(dir) as entries
+# Expand a folder: list it (once) and list each of its subfolders (once), so the tree
+# has the next level's rows before anyone asks for them; then mark it open.
+def explorerExpand(m: Model, dir: str)
+    if m.explorer_listed.get(dir) == nil
+        m.explorer_listed.put(dir, explorerList(dir))
+    if m.explorer_listed.get(dir) as entries
+        for e in entries
+            if e.endsWith("/")
+                var sub: str = dir + "/" + e.substring(0, e.len - 1)
+                if m.explorer_listed.get(sub) == nil
+                    m.explorer_listed.put(sub, explorerList(sub))
+    m.explorer_open.put(dir, true)
+
+# One folder of the explorer inside the native tree (09-23; it was a column of
+# buttons with hand-drawn markers): a folder is a node keyed by its path, holding its
+# listed children whether or not it is expanded, and a file a leaf keyed by its full
+# path, so the tree's messages name paths directly. Expanding lists in update, where
+# the listing belongs.
+def explorerDir(g: Gui, m: Model, dir: str)
+    if m.explorer_listed.get(dir) as entries
         for e in entries
             var full: str = dir + "/" + e
             if e.endsWith("/")
                 var sub: str = full.substring(0, full.len - 1)
-                var mark: str = "▸ "
-                if m.explorer_open.get(sub) != nil
-                    mark = "▾ "
-                g.button(pad + mark + e, Msg.toggle_dir(sub))
-                using g.vbox("##dir:" + sub, false)
-                    explorerDir(g, m, sub, depth + 1)
+                var open: bool = m.explorer_open.get(sub) != nil
+                g.treeNodeIcon(sub, e, open, "folder")
+                explorerDir(g, m, sub)
+                g.treePop()
             else
-                g.button(pad + e, Msg.open_path(full))
+                g.treeLeafIcon(full, e, "file")
 
 # A one-column table of texts under a header (References / Symbols / Problems).
 def rowTable(g: Gui, id: str, header: str, rows: List(str))
@@ -1920,7 +1945,9 @@ def view(g: Gui, m: Model)
                 using g.vbox("##explorer", false)
                     g.minSize("##explorer", 220, 0)
                     g.text("Project")
-                    explorerDir(g, m, m.explorer_root, 0)
+                    g.beginTree("##explorer_tree", def(k: str): Msg = Msg.explorer_pick(k), def(k: str): Msg = Msg.explorer_pick(k), def(k: str, o: bool): Msg = Msg.explorer_expand(ExpandDir(key: k, open: o)))
+                    explorerDir(g, m, m.explorer_root)
+                    g.endTree()
             m.editor!.render(g, "##code", 0, 0)
             using g.vbox("##side", false)
                 g.minSize("##side", 320, 0)   # a floor for the pane; the editor takes the rest
