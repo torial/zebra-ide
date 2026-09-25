@@ -8,6 +8,8 @@ Status 2026-09-08: plan phases P0–P4 are landed and pass every headless gate i
 Linux container. **Nothing has yet been run on Windows with a window open.** The
 first-run checklist below is written for exactly that moment.
 
+![Screenshot of IDE](zebra-idea.png)
+
 ## Prerequisites (Windows laptop)
 
 - `C:\Projects\zebra-language` built: `zig build` (Zig 0.16). Put `zig-out\bin` on
