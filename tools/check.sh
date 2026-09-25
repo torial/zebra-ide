@@ -3,6 +3,8 @@
 #   1. sci_test          constants module loads (headless)
 #   2. buffers_test      document bookkeeping (headless)
 #   3. textops_test      applyEdits / symbolLines / auto-indent, pure (headless)
+#   3'. ignore_test      the explorer's .gitignore filter: glob, anchoring, dir-only,
+#                        negation, and this repo's own .gitignore both ways (pure)
 #   3a. keys_test        the shortcut table: no duplicate chords, Scintilla's own keys unclaimed
 #   3b. gates_test       manifest + runner vs the real compiler (headless)
 #   3b'. tests_test      the test runner vs the real compiler: `zebra test --list`
@@ -40,6 +42,7 @@ step() { echo "── $1"; }
 step "sci_test";        (cd src && "$ZEBRA" sci_test.zbr 2>&1 | tail -1 | grep -q "sci_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "buffers_test";    (cd src && "$ZEBRA" buffers_test.zbr 2>&1 | tail -1 | grep -q "buffers_test: ok") && echo PASS || { echo FAIL; fail=1; }
 step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | grep -q "textops_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "ignore_test";     (cd src && "$ZEBRA" ignore_test.zbr 2>&1 | tail -1 | grep -q "ignore_test: ok") && echo PASS || { echo FAIL; fail=1; }
 # keys.zbr names CodeEditor (registerShortcuts, the BUG-355 witness), so it needs a GUI
 # backend — on tui the stub. Refuter, 09-08: run headless it did not even compile.
 step "keys_test (tui)"; (cd src && rm -rf keys_test_gui_tui && "$ZEBRA" --gui-backend=tui keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }

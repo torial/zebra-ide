@@ -1,0 +1,102 @@
+# ignore.zbr — the project's .gitignore as the explorer's filter, pure (2026-09-25).
+#
+# The explorer hid a HAND-WRITTEN list of names (zig-out, .zig-cache, zig-pkg, dotfiles)
+# and knew nothing of the project's own rules, so this repo's tree showed gates_tmp/,
+# tests_tmp/, ide_gui_libui_ng/ and ide_gui_tui/ under src/ -- scratch the .gitignore
+# already declares. A newcomer's own build output would show the same way. The project
+# says what is noise; this reads it rather than guessing.
+#
+# The subset of gitignore(5) that decides a tree's visibility:
+#   blank lines and `#` comments skipped
+#   `!pat`          re-includes (the LAST matching rule wins, as in git)
+#   `pat/`          matches directories only
+#   `/pat`, `a/b`   anchored: matched against the path from the project root
+#   `pat`           unanchored: matched against the entry's own name, at any depth
+#   `*` `?`         within one path component;  `**` crosses components
+# Not modelled: nested .gitignore files, escaped characters, `[...]` classes. An unmodelled
+# pattern can only fail to HIDE something -- the tree shows too much, never too little.
+
+struct IgnoreRule
+    var pat: str
+    var dir_only: bool
+    var anchored: bool
+    var negate: bool
+
+def parseIgnore(text: str): List(IgnoreRule)
+    var rules: List(IgnoreRule) = List(IgnoreRule)()
+    for raw in text.split("\n")
+        var ln: str = raw.trim()
+        if ln.len == 0 or ln.startsWith("#")
+            continue
+        var neg: bool = false
+        if ln.startsWith("!")
+            neg = true
+            ln = ln.substring(1, ln.len)
+        var dir_only: bool = false
+        if ln.endsWith("/")
+            dir_only = true
+            ln = ln.substring(0, ln.len - 1)
+        var anchored: bool = false
+        if ln.startsWith("/")
+            anchored = true
+            ln = ln.substring(1, ln.len)
+        if ln.indexOf("/") >= 0
+            anchored = true
+        if ln.len > 0
+            rules.add(IgnoreRule(pat: ln, dir_only: dir_only, anchored: anchored, negate: neg))
+    return rules
+
+# `rel` is a path from the project root, with or without a leading "./".
+def isIgnored(rules: List(IgnoreRule), rel: str, is_dir: bool): bool
+    var path: str = rel
+    if path.startsWith("./")
+        path = path.substring(2, path.len)
+    var base: str = path
+    var cut: int = path.lastIndexOf("/")
+    if cut >= 0
+        base = path.substring(cut + 1, path.len)
+    var ignored: bool = false
+    for r in rules
+        if r.dir_only and not is_dir
+            continue
+        var hit: bool = false
+        if r.anchored
+            hit = globMatch(r.pat, path)
+        else
+            hit = globMatch(r.pat, base)
+        if hit
+            ignored = not r.negate
+    return ignored
+
+def globMatch(p: str, s: str): bool
+    return globAt(p, 0, s, 0)
+
+def globAt(p: str, pi: int, s: str, si: int): bool
+    if pi == p.len
+        return si == s.len
+    if p[pi] == c'*'
+        var dbl: bool = pi + 1 < p.len and p[pi + 1] == c'*'
+        var np: int = pi + 1
+        if dbl
+            np = pi + 2
+            # `**/x` also matches `x` at the top, i.e. zero directories
+            if np < p.len and p[np] == c'/'
+                if globAt(p, np + 1, s, si)
+                    return true
+        var k: int = si
+        while k <= s.len
+            if globAt(p, np, s, k)
+                return true
+            if k < s.len and not dbl and s[k] == c'/'
+                return false
+            k = k + 1
+        return false
+    if si == s.len
+        return false
+    if p[pi] == c'?'
+        if s[si] == c'/'
+            return false
+        return globAt(p, pi + 1, s, si + 1)
+    if p[pi] != s[si]
+        return false
+    return globAt(p, pi + 1, s, si + 1)

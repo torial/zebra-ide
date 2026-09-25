@@ -4,9 +4,15 @@ A lightweight IDE for Zebra, C and Zig, written in Zebra, on libui-ng + Scintill
 talking to `zebra lsp` and `zebra debug`. Everything the IDE does beyond editing also
 runs headless (`tools/check.sh`), so a window is never the only witness.
 
-Status 2026-09-08: plan phases P0–P4 are landed and pass every headless gate in a
-Linux container. **Nothing has yet been run on Windows with a window open.** The
-first-run checklist below is written for exactly that moment.
+Status 2026-09-25: every headless gate passes (`tools/check.sh`, 17 steps). The IDE has
+run with a window on Linux (GTK) and, on 2026-09-25, **opened and painted on Windows**:
+menubar, toolbar, tab strip, project tree, colouring, the panes, and the status line
+reporting `zebra lsp` connected -- checklist item 1 and the first half of item 2 below.
+Everything interactive (typing, squiggles, keys, debugging, rename) has still not been
+exercised on Windows; the checklist is written for that.
+
+It needs Zebra **0.9.0-rc3 or newer** (rc1/rc2 lack the toolbar, hotkeys and tree it
+uses). From a source build that means current `main`.
 
 ![Screenshot of IDE](zebra-idea.png)
 
@@ -43,12 +49,12 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    Open a `.c` or `.zig` file: the status line adds `clangd` / `zls` (or says it is not on
    PATH) and the same squiggles work there.
 3. **Type Enter after `def f()`** → the next line is indented, and **Ctrl+S saves**.
-   If not, the notify/key bridge is not live: expected until the compiler builds
-   against the new zig-libui-ng. Two ways to get there — the quick one needs no push:
-   `set ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` before starting the IDE (the
-   generated project then points at your local checkout); the permanent one is push
-   zig-libui-ng, then `tools\bump_libui_pin.sh <sha>` in zebra-language. Editing works
-   either way. Three key-bridge probes the refuter could not run without a window: hold
+   If not, the notify/key bridge is not live. Since 2026-09-25 the compiler's pinned
+   zig-libui-ng has it, so this should work with no setup; if you are developing
+   zig-libui-ng itself, `set ZEBRA_LIBUI_PATH=C:\Projects\zig-libui-ng` builds against
+   your local checkout instead. (Before that date the pin was stale, and a build WITHOUT
+   that variable failed outright -- 14 compile errors -- rather than degrading.) Three
+   key-bridge probes the refuter could not run without a window: hold
    Ctrl+S for two seconds — the buffer must gain no 0x13 bytes; with an IME active press
    F9 then commit a composition — the first committed character must not be lost; press
    F12 with an autocomplete/calltip open — its own keys must still work. Also close the
@@ -59,7 +65,7 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
    diagnostics are jumpable. (`zebra src\gates.zbr -- zebra-ide.json` is the same thing
    headless.)
 5b. Open a file with `def test_*()` functions (`src\tests_tmp\suite.zbr` after `check.sh`
-   has run, or write one: `assert_eq 1, 2` in a test) and press **Run tests** → the
+   has run, or write one: `assert 1 == 2` in a test) and press **Run tests** → the
    Tests pane lists every test with ✓ / ✗ and the failure message, the status line says
    `N/M passed`; put the caret on a ✗ line and **Jump to test** lands on the failing
    assert; **Re-run failed** runs only those (`zebra test --only …`). **Run** (Ctrl+R)
@@ -83,7 +89,35 @@ project (Build / Run gates read it); this repo has one, and so does zebra-langua
 If a step fails, the thing to send back is the status line text plus, for 2/4/6, the
 child's stderr: run `zebra lsp` / `zebra debug file.zbr` by hand and paste what it
 prints. Every layer below the window has a headless test that has been seen red; the
-window itself has none and has never been opened.
+window itself has no automated test -- a person running it is the only witness.
+
+## Project manifest (`zebra-ide.json`)
+
+Build, Run gates and the tool buttons read `zebra-ide.json` from the directory you start
+the IDE in; without one they say so in the status line. A starter for a one-file project
+(`main.zbr` beside it):
+
+```json
+{
+  "name": "hello",
+  "build": { "cmd": ["zebra", "--check-full", "main.zbr"] },
+  "gates": [
+    { "name": "runs",  "cmd": ["zebra", "main.zbr"], "expect": "hello" },
+    { "name": "tests", "cmd": ["zebra", "test", "main.zbr"] }
+  ]
+}
+```
+
+A gate passes when its command exits 0 and, if `expect` is given, its output contains
+that text (`zebra test` already exits non-zero when a test fails, so the tests gate needs
+no `expect`). Every field is optional. `cwd` (relative to the manifest), `timeout_ms`,
+`skip` and the `tools` / `tests` sections are described under *Known limits* and in
+`src/gates.zbr`; this repository's own `zebra-ide.json` is a larger example. Check one
+headless with `zebra src\gates.zbr -- path\to\zebra-ide.json`.
+
+The project tree hides whatever the project's `.gitignore` names (plus `.git`,
+`zig-out`, `.zig-cache` and dotfiles), so build output and scratch directories stay out
+of it.
 
 ## What is where
 
@@ -98,24 +132,22 @@ window itself has none and has never been opened.
 | `src/tests.zbr` | the test runner as data: `zebra test --list` → suite, run output → ✓/✗/crash/not-run per test with jump lines, `--only` re-runs; pure | `tests_test.zbr` vs the real compiler; the Model path in `model_test.zbr` |
 | `src/sci.zbr` | Scintilla message ids (generated: `tools/gen_sci.py`) | `sci_test.zbr` |
 | `src/keys.zbr` | the shortcut table (chord → action), pure | `keys_test.zbr` |
+| `src/ignore.zbr` | the project's `.gitignore` as the explorer's filter (glob, anchoring, dir-only, negation), pure | `ignore_test.zbr` |
 | `src/textops.zbr` | WorkspaceEdit application (in memory, and `applyWorkspaceEditToDisk` for unopened files), symbol outline, auto-indent decision | `textops_test.zbr`, `rename_workspace_test.zbr` |
-| `tools/check.sh` | the gate: all of the above, 15 steps | — |
+| `tools/check.sh` | the gate: all of the above, 17 steps | — |
 
 ## Known limits (stated, not hidden)
 
-- Tabs are a button row, one per open file, the current one in `[brackets]`; no
-  limit (09-08: the compiler's GUI section now hides a widget the view stops
-  emitting, so closed tabs disappear). A real `uiTab` strip is still not used —
-  libui-ng cannot relabel a page and the row is the honest version of that.
-- Keyboard shortcuts (09-08, needs the zig-libui-ng key shim → the pin bump): Ctrl+S
+- Tabs are a real `uiTab` strip (since 09-16), one page per open file over the one
+  Scintilla editor; selecting a tab drives the model and back.
+- Keyboard shortcuts (live since the 2026-09-25 pin bump): Ctrl+S
   save, Ctrl+W close, Ctrl+F find next, Ctrl+B build, Ctrl+Shift+B gates, Ctrl+R run
   the current file, Ctrl+Shift+T run its tests, Ctrl+Shift+R re-run the failed ones,
   Ctrl+Shift+C run them with coverage,
   Ctrl+G go to the line typed in the `line` box,
   F5 debug / continue, Shift+F5 stop, F9 breakpoint, F10 next, F11 step in, Shift+F11
   step out, F12 definition, Shift+F12 references. The table is `src/keys.zbr` (keys_test checks
-  it claims nothing Scintilla owns — Ctrl+C/V/X/Z/Y/A stay the editor's). Until the
-  pin moves, the chords are inert and the buttons do everything.
+  it claims nothing Scintilla owns — Ctrl+C/V/X/Z/Y/A stay the editor's).
 - Variables: when the program stops, the debugger pane shows the top frame's scopes
   under the frames — Globals and Registers with values (first 40 each), and Locals,
   which is EMPTY for Zig programs because lldb has no Zig language plugin; the pane
@@ -137,9 +169,8 @@ window itself has none and has never been opened.
   makes it a hook instead of a button. A dirty buffer is saved before a tool that
   names `${file}`. Design: wiki `concept_zebra-ide-plugins`. Kind 2 (in-process
   DLLs) waits on the compiler's shared-library round trip (BUG-356, pinned gate).
-- **Haiku: not started.** The GUI is built for Windows first; the compiler-side
-  cross-platform work (libui-ng's Haiku backend, a Scintilla platform layer) is the
-  long pole and lives in the plan, not here.
+- **Haiku: dropped.** zig-libui-ng removed its Haiku backend on 2026-09-23; the IDE's
+  platforms are Windows and Linux (GTK), with macOS written but untested.
 - Rename edits open buffers in memory (unsaved) and rewrites unopened files on disk
   in place, and says so in the status line. Close refuses once on unsaved changes.
   `zebra lsp` (from 09-08) resolves the `use` graph from disk — the modules a file
@@ -161,9 +192,10 @@ window itself has none and has never been opened.
   Discovery is the compiler's (`zebra test --list`: `def test_*()` with no params, and
   class-static `test_*`; a `def test_x(n)` is not a test and is not listed), the run is
   `zebra test [--only …]`, both queued through the gate runner so they never overlap a
-  build. Per test: ✓ pass, ✗ fail with the message (the `assert_*` family raises and
-  the run continues), ✗! crash — a plain `assert` PANICS, the process ends there and
-  everything after it is "not run"; the compiler's `RUN:` line pins the panic on the
-  right test and `assert failed at f.zbr:NN` gives the jump line. Prefer `assert_eq` /
-  `assert_true` in tests. `"tests": { "on_save": true }` in the manifest runs the saved
+  build. Per test: ✓ pass, ✗ fail with the message -- a failing `assert` in a test is a
+  FAIL verdict naming both operands (`left: 1, right: 2`) and the run continues to the
+  next test -- and ✗! crash for a real panic, where the process ends and everything after
+  it is "not run"; the compiler's `RUN:` line pins it on the right test and `assert
+  failed at f.zbr:NN` gives the jump line. (`assert_eq` / `assert_true` are not Zebra
+  any more: write `assert a == b`.) `"tests": { "on_save": true }` in the manifest runs the saved
   file's tests on every Ctrl+S. Only `.zbr` files; a file with no tests says so.

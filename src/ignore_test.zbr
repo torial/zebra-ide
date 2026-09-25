@@ -1,0 +1,59 @@
+# ignore_test — the explorer's .gitignore filter, headless.   zebra src/ignore_test.zbr
+#
+# BOTH DIRECTIONS on purpose: a filter that hid everything would pass every "must hide"
+# assertion, and one that hid nothing every "must show" one. Each case below is paired.
+use ignore exposing parseIgnore, isIgnored, globMatch
+
+def main()
+    # glob: `*` stays inside one component, `**` crosses them, `?` is one non-slash char
+    assert globMatch("*.zig", "ide.zig")
+    assert not globMatch("*.zig", "ide.zbr")
+    assert not globMatch("src/*.zig", "src/sub/ide.zig")
+    assert globMatch("src/**/*.zig", "src/sub/deep/ide.zig")
+    assert globMatch("**/build", "build")
+    assert globMatch("**/build", "a/b/build")
+    assert globMatch("te?t", "test")
+    assert not globMatch("te?t", "te/t")
+    assert globMatch("*_gui_tui", "ide_gui_tui")
+    assert not globMatch("*_gui_tui", "ide_gui_libui_ng")
+
+    # THIS repository's own .gitignore is the realistic oracle: the scratch it declares
+    # must vanish from the tree, and the sources beside it must not.
+    var rules = parseIgnore(File.read("../.gitignore"))
+    assert rules.len >= 6, "parsed only " + rules.len.toString() + " rules from ../.gitignore"
+    assert isIgnored(rules, "./src/ide_gui_tui", true)
+    assert isIgnored(rules, "./src/ide_gui_libui_ng", true)
+    assert isIgnored(rules, "./src/gates_tmp", true)
+    assert isIgnored(rules, "./src/tests_tmp", true)
+    assert isIgnored(rules, "./src/ide.zig", false)
+    assert not isIgnored(rules, "./src/ide.zbr", false)
+    assert not isIgnored(rules, "./src/textops.zbr", false)
+    assert not isIgnored(rules, "./src", true)
+    assert not isIgnored(rules, "./tools/check.sh", false)
+    assert not isIgnored(rules, "./tools/gen_sci.py", false)
+
+    # dir-only: `out/` hides a directory named out, not a file named out
+    var d = parseIgnore("out/\n")
+    assert isIgnored(d, "out", true)
+    assert not isIgnored(d, "out", false)
+
+    # unanchored matches at any depth; anchored only from the root
+    var u = parseIgnore("*.log\n/top.txt\n")
+    assert isIgnored(u, "a/b/c.log", false)
+    assert isIgnored(u, "top.txt", false)
+    assert not isIgnored(u, "sub/top.txt", false)
+
+    # last match wins, so `!` re-includes
+    var n = parseIgnore("*.log\n!keep.log\n")
+    assert isIgnored(n, "x.log", false)
+    assert not isIgnored(n, "keep.log", false)
+
+    # comments, blank lines and CRLF are not rules
+    var c = parseIgnore("# a comment\r\n\r\n   \r\nzig-out/\r\n")
+    assert c.len == 1, "expected 1 rule, got " + c.len.toString()
+    assert isIgnored(c, "zig-out", true)
+
+    # no rules hides nothing
+    assert not isIgnored(parseIgnore(""), "anything", true)
+
+    print("ignore_test: ok")

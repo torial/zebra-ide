@@ -9,6 +9,7 @@
     { "name": "sci_test",        "cmd": ["zebra", "sci_test.zbr"],        "cwd": "src", "expect": "sci_test: ok" },
     { "name": "buffers_test",    "cmd": ["zebra", "buffers_test.zbr"],    "cwd": "src", "expect": "buffers_test: ok" },
     { "name": "textops_test",    "cmd": ["zebra", "textops_test.zbr"],    "cwd": "src", "expect": "textops_test: ok" },
+    { "name": "ignore_test",     "cmd": ["zebra", "ignore_test.zbr"],     "cwd": "src", "expect": "ignore_test: ok" },
     { "name": "keys_test",       "cmd": ["zebra", "--gui-backend=tui", "keys_test.zbr"], "cwd": "src", "expect": "keys_test: ok" },
     { "name": "tools_test",      "cmd": ["zebra", "tools_test.zbr"],      "cwd": "src", "expect": "tools_test: ok" },
     { "name": "model_test",      "cmd": ["zebra", "--gui-backend=tui", "model_test.zbr"], "cwd": "src", "expect": "model_test: ok", "timeout_ms": 300000 },
