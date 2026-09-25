@@ -100,7 +100,7 @@ the IDE in; without one they say so in the status line. A starter for a one-file
 ```json
 {
   "name": "hello",
-  "build": { "cmd": ["zebra", "--check-full", "main.zbr"] },
+  "build": { "cmd": ["zebra", "-c", "--check-full", "main.zbr"] },
   "gates": [
     { "name": "runs",  "cmd": ["zebra", "main.zbr"], "expect": "hello" },
     { "name": "tests", "cmd": ["zebra", "test", "main.zbr"] }
