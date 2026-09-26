@@ -14,6 +14,16 @@ exercised on Windows; the checklist is written for that.
 It needs Zebra **0.9.0-rc3 or newer** (rc1/rc2 lack the toolbar, hotkeys and tree it
 uses). From a source build that means current `main`.
 
+**On Linux, rc3 is not enough (2026-09-26):** rc3 pins a zig-libui-ng whose GTK Scintilla
+notify handler trips Zig's UBSan function-type check, so the IDE -- like every libui_ng
+program with a code editor -- aborts at startup ("Illegal instruction" in
+`scintilla-marshal.c`). Fixed in zig-libui-ng `b405e2b9`, which the compiler's `main` pins.
+Until a release carries it, on Linux use a compiler built from `main`, or set
+`ZEBRA_LIBUI_PATH` to a zig-libui-ng checkout at or after that commit. For the same reason
+the Linux leg of `build.yml` is red and an IDE `v*` tag will not publish (the release job
+requires both platforms). Windows is unaffected. How the Linux window run recorded above
+avoided it is not established (a ReleaseFast build carries no UBSan, which would do it).
+
 ![Screenshot of IDE](zebra-idea.png)
 
 ## Prerequisites (Windows laptop)
