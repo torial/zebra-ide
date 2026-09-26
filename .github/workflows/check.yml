@@ -1,0 +1,109 @@
+# The headless gate (tools/check.sh) on every push and PR, on Windows and Linux.
+#
+# WHICH COMPILER: the latest Zebra RELEASE, installed with the same one-line installer
+# the zebra-language README teaches -- not the compiler's main branch. A user of the IDE
+# installs the release, so this goes red when the IDE starts depending on something no
+# release has yet; that is the signal to cut a compiler release, or to say in the README
+# which version is needed. (The IDE's own README pins the floor: 0.9.0-rc3.)
+# `workflow_dispatch` takes an optional `zebra_version` (a tag such as
+# v0.9.0-rc3_zig0.16) to check against a specific release instead.
+#
+# WHAT IS NOT EXERCISED HERE, and check.sh says so rather than printing PASS:
+#   - dap_client_test   SKIP: no lldb-dap on the runners
+#   - cross_lsp_test    SKIP: no clangd / zls on the runners
+#   - anything with a window: typing, painting, clicks. build.yml starts the real
+#     libui_ng binary and checks it stays up; nothing here can look at it.
+# A SKIP line in the log is not a pass. Read the step list if you need to know which ran.
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      zebra_version:
+        description: "Zebra release tag to check against (empty = latest)"
+        required: false
+        default: ""
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      ZEBRA_VERSION: ${{ inputs.zebra_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Zebra (Windows installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/torial/zebra-language/main/install/install.ps1 | iex
+          $cur = Join-Path $env:USERPROFILE '.zebra\current'
+          # The installer edits the USER path for new terminals; a runner step needs GITHUB_PATH.
+          Add-Content $env:GITHUB_PATH $cur
+          Add-Content $env:GITHUB_PATH (Join-Path $cur 'zig')
+
+      - name: Install Zebra (Linux installer)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/torial/zebra-language/main/install/install.sh | sh
+          echo "$HOME/.zebra/current" >> "$GITHUB_PATH"
+          echo "$HOME/.zebra/current/zig" >> "$GITHUB_PATH"
+
+      # Liveness, not presence: say which compiler and which Zig every later step used.
+      - name: Which compiler, which Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          zebra --version
+          zig version
+
+      # The libui bindings, for check.sh's step 7 (`zig build-obj` of the libui_ng shape
+      # against the REAL binding signatures). It cross-compiles for x86_64-windows from
+      # either OS, so both legs run it. Without this checkout the step prints
+      # "skipped (set LIBUI_BINDINGS)" and the libui half of the IDE goes unchecked.
+      #
+      # AT THE SHA THE INSTALLED COMPILER PINS, not zig-libui-ng's HEAD: a user's
+      # `--gui-backend=libui_ng` build fetches that pin, so that is what the IDE must
+      # compile against. The pin is read from a scaffold the compiler writes, rather
+      # than copied here, so it cannot drift from the compiler.
+      - name: Read the compiler's zig-libui-ng pin
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/pinprobe"; mkdir -p "$d"
+          printf 'def main()\n    print("x")\n' > "$d/probe.zbr"
+          zebra --gui-backend=libui_ng --scaffold-only --output-dir "$d" "$d/probe.zbr"
+          sha=$(grep -oE 'zig-libui-ng[^"]*#[0-9a-f]{40}' "$d"/probe_gui_libui_ng/build.zig.zon | grep -oE '[0-9a-f]{40}$' | head -1)
+          [ -n "$sha" ] || { echo "::error::no zig-libui-ng pin found in the scaffold's build.zig.zon"; cat "$d"/probe_gui_libui_ng/build.zig.zon; exit 1; }
+          echo "pinned zig-libui-ng: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out zig-libui-ng at the pin
+        uses: actions/checkout@v5
+        with:
+          repository: torial/zig-libui-ng
+          ref: ${{ steps.pin.outputs.sha }}
+          path: zig-libui-ng
+
+      - name: tools/check.sh
+        shell: bash
+        env:
+          LIBUI_BINDINGS: ${{ github.workspace }}/zig-libui-ng/src
+        run: bash tools/check.sh

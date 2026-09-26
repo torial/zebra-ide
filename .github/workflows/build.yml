@@ -1,0 +1,238 @@
+# Build the IDE itself (the libui_ng backend: a real window, Scintilla editors) for Windows
+# and Linux, prove each binary STARTS, and keep it as a downloadable artifact. On a `v*`
+# tag the same binaries are attached to a GitHub release.
+#
+# What "starts" means here, since no job can look at a window: the program is launched
+# (under Xvfb on Linux) and must still be running 15 s later. That catches the class the
+# compiler repo's gui-scaffold gate exists for -- a crash or a failed init that EXITS at
+# startup -- and nothing past it. It cannot tell running from hung: an init failure that
+# blocks, or parks on a dialog, passes. Each step runs a control first (a program that
+# exits at once must read as exited). Typing, painting, clicks, LSP squiggles and the
+# debugger are still only proven by a person running the IDE (README's checklist).
+#
+# WHICH COMPILER: the latest Zebra release, installed exactly as a user installs it (see
+# check.yml for why). The scaffold pins its zig-libui-ng dependency itself -- nothing here
+# chooses a libui version, so this builds what a user's `zebra --gui-backend=libui_ng`
+# would build.
+#
+# OPTIMIZE: ReleaseSafe, not the ReleaseFast `zebra --release` uses. An IDE at this stage
+# is better off panicking with a message and a stack than continuing past a bug; switch to
+# ReleaseFast when that trade changes.
+#
+# Tags: `v<version>`, e.g. v0.1.0. The version is the tag; nothing in the source carries
+# one yet, so there is nothing for the tag to disagree with.
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            plat: windows-x86_64
+            exe: app.exe
+            out: zebra-ide.exe
+            pack: zip
+          - os: ubuntu-latest
+            plat: linux-x86_64
+            exe: app
+            out: zebra-ide
+            pack: tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: GTK 3 headers and Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev xvfb
+
+      - name: Install Zebra (Windows installer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          irm https://raw.githubusercontent.com/torial/zebra-language/main/install/install.ps1 | iex
+          $cur = Join-Path $env:USERPROFILE '.zebra\current'
+          Add-Content $env:GITHUB_PATH $cur
+          Add-Content $env:GITHUB_PATH (Join-Path $cur 'zig')
+
+      - name: Install Zebra (Linux installer)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/torial/zebra-language/main/install/install.sh | sh
+          echo "$HOME/.zebra/current" >> "$GITHUB_PATH"
+          echo "$HOME/.zebra/current/zig" >> "$GITHUB_PATH"
+
+      - name: Which compiler, which Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          zebra --version
+          zig version
+
+      - name: Version string
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::8}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "name=zebra-ide-$v-${{ matrix.plat }}" >> "$GITHUB_OUTPUT"
+
+      # --scaffold-only writes the zig project (build.zig, the pinned build.zig.zon, the
+      # emitted modules and runtime) and stops, so the build below can pick its own
+      # optimize mode -- and so nothing here launches the app by accident.
+      - name: Scaffold (zebra --gui-backend=libui_ng --scaffold-only)
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          rm -rf ide_gui_libui_ng
+          zebra --gui-backend=libui_ng --scaffold-only --output-dir . ide.zbr
+          test -f ide_gui_libui_ng/build.zig
+          test -f ide_gui_libui_ng/build.zig.zon
+
+      - name: Build (zig build -Doptimize=ReleaseSafe)
+        shell: bash
+        working-directory: src/ide_gui_libui_ng
+        run: |
+          set -euo pipefail
+          zig build -Doptimize=ReleaseSafe
+          ls -l zig-out/bin/
+          test -f "zig-out/bin/${{ matrix.exe }}"
+
+      - name: Starts and stays up (Linux, Xvfb)
+        if: runner.os == 'Linux'
+        working-directory: src/ide_gui_libui_ng
+        run: |
+          # stays_up CMD...: 0 if CMD was still running at 15 s (timeout had to stop it,
+          # rc 124), 1 if it exited on its own. The CONTROL runs first: a program that
+          # exits at once must be classified as exited, or this harness cannot tell the
+          # two apart and its "startup OK" would mean nothing.
+          stays_up() { set +e; xvfb-run -a timeout 15 "$@" > run.log 2>&1; rc=$?; set -e; [ "$rc" = 124 ]; }
+          if stays_up sh -c 'exit 3'; then
+            echo "::error::harness control failed: a program that exits at once was reported as still running"
+            exit 2
+          fi
+          echo "control: an immediately-exiting program is reported as exited (ok)"
+          if ! stays_up ./zig-out/bin/app; then
+            cat run.log
+            echo "::error::the IDE exited with rc=$rc within 15 s of starting (expected to still be running)"
+            exit 1
+          fi
+          cat run.log
+          echo "still running after 15 s: no crash at startup"
+
+      - name: Starts and stays up (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: src/ide_gui_libui_ng
+        run: |
+          # Returns $true if the program was still running after 15 s. The CONTROL runs
+          # first (see the Linux step): an immediately-exiting program must read as exited.
+          function StaysUp([string]$exe, [string[]]$argv) {
+            $a = @{ FilePath = $exe; PassThru = $true; RedirectStandardOutput = 'run.out'; RedirectStandardError = 'run.err' }
+            if ($argv) { $a.ArgumentList = $argv }
+            $p = Start-Process @a
+            Start-Sleep -Seconds 15
+            $alive = -not $p.HasExited
+            if ($alive) { Stop-Process -Id $p.Id -Force } else { $script:rc = $p.ExitCode }
+            return $alive
+          }
+          if (StaysUp 'cmd.exe' @('/c', 'exit 3')) {
+            Write-Host "::error::harness control failed: a program that exits at once was reported as still running"
+            exit 2
+          }
+          Write-Host "control: an immediately-exiting program is reported as exited (ok)"
+          $up = StaysUp '.\zig-out\bin\app.exe' $null
+          Get-Content run.out, run.err -ErrorAction SilentlyContinue
+          if (-not $up) {
+            Write-Host "::error::the IDE exited with rc=$script:rc within 15 s of starting (expected to still be running)"
+            exit 1
+          }
+          Write-Host "still running after 15 s: no crash at startup"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.ver.outputs.name }}"
+          mkdir -p "dist/$name"
+          cp "src/ide_gui_libui_ng/zig-out/bin/${{ matrix.exe }}" "dist/$name/${{ matrix.out }}"
+          cp README.md "dist/$name/"
+          cat > "dist/$name/INSTALL.txt" <<EOF
+          zebra-ide ${{ steps.ver.outputs.version }} (${{ matrix.plat }})
+
+          The IDE is one executable. It needs the Zebra compiler on PATH at run time:
+          editing Zebra uses \`zebra lsp\`, Build / Run / gates run \`zebra\`, and the
+          debugger runs \`zebra debug\` (which needs LLVM's lldb-dap). Install Zebra
+          0.9.0-rc3 or newer: https://github.com/torial/zebra-language#install
+          C and Zig support additionally need clangd and zls on PATH.
+
+          Start it from your project directory; it reads zebra-ide.json from there.
+          EOF
+          cd dist
+          if [ "${{ matrix.pack }}" = zip ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          ls -l
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.ver.outputs.name }}
+          path: dist/${{ steps.ver.outputs.name }}.${{ matrix.pack }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -l
+          sha256sum zebra-ide-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          # Two platforms were built; a release carrying fewer is not the release the
+          # tag names.
+          [ "$(ls zebra-ide-* | wc -l)" = 2 ] || { echo "::error::expected 2 packages"; exit 1; }
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/zebra-ide-*
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            One executable per platform. It needs Zebra **0.9.0-rc3 or newer** on PATH at run
+            time (`zebra lsp`, builds, `zebra debug`); see INSTALL.txt in the archive.
+            Built with ReleaseSafe; each binary was launched on its runner and stayed up for
+            15 s. Nothing automated has clicked in it -- see the README's checklist.

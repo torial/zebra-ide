@@ -119,6 +119,19 @@ The project tree hides whatever the project's `.gitignore` names (plus `.git`,
 `zig-out`, `.zig-cache` and dotfiles), so build output and scratch directories stay out
 of it.
 
+## CI and releases (GitHub Actions)
+
+Both workflows install Zebra the way a user does (the latest release, through the
+installer), so they go red when the IDE starts needing something no release has.
+
+| workflow | runs on | what it proves | what it cannot |
+|---|---|---|---|
+| `check.yml` | every push / PR; Windows + Linux | `tools/check.sh`: every headless test, the tui compile, and the libui_ng shape compiled against zig-libui-ng **at the SHA the compiler pins** | the debugger (`dap_client_test` SKIPs: no lldb-dap) and C/Zig LSP (`cross_lsp_test` SKIPs: no clangd/zls) |
+| `build.yml` | every push / PR, and `v*` tags | the real libui_ng IDE builds (ReleaseSafe) and is still running 15 s after launch (Xvfb on Linux); archives kept as artifacts; on a tag, attached to a GitHub release with `SHA256SUMS.txt` | anything past startup: a hang passes, and nothing clicks, types or looks at the window |
+
+To release: tag `v<version>` (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+`workflow_dispatch` on `check.yml` accepts a Zebra tag to check against a specific release.
+
 ## What is where
 
 | file | what | test |
