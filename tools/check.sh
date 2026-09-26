@@ -39,22 +39,33 @@ cd "$(dirname "$0")/.."
 ZEBRA=${ZEBRA:-zebra}
 fail=0
 step() { echo "── $1"; }
-step "sci_test";        (cd src && "$ZEBRA" sci_test.zbr 2>&1 | tail -1 | grep -q "sci_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "buffers_test";    (cd src && "$ZEBRA" buffers_test.zbr 2>&1 | tail -1 | grep -q "buffers_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "textops_test";    (cd src && "$ZEBRA" textops_test.zbr 2>&1 | tail -1 | grep -q "textops_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "ignore_test";     (cd src && "$ZEBRA" ignore_test.zbr 2>&1 | tail -1 | grep -q "ignore_test: ok") && echo PASS || { echo FAIL; fail=1; }
+# expect PATTERN MODE CMD...: run CMD in src/, PASS if its output matches PATTERN (MODE
+# `last` = the last line, `any` = anywhere). On FAIL, print the output's tail: a bare FAIL
+# was all CI showed the first time lsp_client_test failed on Linux, and the log it needed
+# had been thrown away by `| tail -1 | grep -q`.
+expect() {
+  local pat="$1" mode="$2"; shift 2
+  local out; out=$(cd src && "$@" 2>&1)
+  local hay="$out"; [ "$mode" = last ] && hay=$(printf '%s\n' "$out" | tail -1)
+  if printf '%s\n' "$hay" | grep -q -- "$pat"; then echo PASS; return 0; fi
+  echo FAIL; printf '%s\n' "$out" | tail -15 | sed 's/^/    | /'; fail=1; return 1
+}
+step "sci_test";        expect "sci_test: ok" last "$ZEBRA" sci_test.zbr
+step "buffers_test";    expect "buffers_test: ok" last "$ZEBRA" buffers_test.zbr
+step "textops_test";    expect "textops_test: ok" last "$ZEBRA" textops_test.zbr
+step "ignore_test";     expect "ignore_test: ok" last "$ZEBRA" ignore_test.zbr
 # keys.zbr names CodeEditor (registerShortcuts, the BUG-355 witness), so it needs a GUI
 # backend — on tui the stub. Refuter, 09-08: run headless it did not even compile.
-step "keys_test (tui)"; (cd src && rm -rf keys_test_gui_tui && "$ZEBRA" --gui-backend=tui keys_test.zbr 2>&1 | tail -1 | grep -q "keys_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "gates_test";      (cd src && "$ZEBRA" gates_test.zbr 2>&1 | tail -1 | grep -q "gates_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "tests_test";      (cd src && rm -rf tests_tmp && "$ZEBRA" tests_test.zbr 2>&1 | tail -1 | grep -q "tests_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "tools_test";      (cd src && "$ZEBRA" tools_test.zbr 2>&1 | tail -1 | grep -q "tools_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "keys_test (tui)"; rm -rf src/keys_test_gui_tui; expect "keys_test: ok" last "$ZEBRA" --gui-backend=tui keys_test.zbr
+step "gates_test";      expect "gates_test: ok" last "$ZEBRA" gates_test.zbr
+step "tests_test";      rm -rf src/tests_tmp; expect "tests_test: ok" last "$ZEBRA" tests_test.zbr
+step "tools_test";      expect "tools_test: ok" last "$ZEBRA" tools_test.zbr
 # coverage.zbr (09-23): the compiler's zebra-coverage.json read for the Coverage pane --
 # arithmetic, sorting, base-name matching and the rows, against a literal file (pure)
-step "coverage_test (zebra test)"; (cd src && "$ZEBRA" test coverage_test.zbr 2>&1 | grep -q "^4 passed, 0 failed") && echo PASS || { echo FAIL; fail=1; }
+step "coverage_test (zebra test)"; expect "^4 passed, 0 failed" any "$ZEBRA" test coverage_test.zbr
 # icons.zbr (09-23): the toolbar glyphs -> RGBA bytes, pure
-step "icons_test (zebra test)"; (cd src && "$ZEBRA" test icons_test.zbr 2>&1 | grep -q "^3 passed, 0 failed") && echo PASS || { echo FAIL; fail=1; }
-step "model_test (tui, headless Model)"; (cd src && rm -rf model_test_gui_tui && "$ZEBRA" --gui-backend=tui model_test.zbr 2>&1 | tail -1 | grep -q "model_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "icons_test (zebra test)"; expect "^3 passed, 0 failed" any "$ZEBRA" test icons_test.zbr
+step "model_test (tui, headless Model)"; rm -rf src/model_test_gui_tui; expect "model_test: ok" last "$ZEBRA" --gui-backend=tui model_test.zbr
 step "dap_client_test"
 dap_out=$(cd src && "$ZEBRA" dap_client_test.zbr 2>&1 | tail -1)
 case "$dap_out" in
@@ -62,8 +73,8 @@ case "$dap_out" in
   *"dap_client_test: skipped"*) echo "SKIP (lldb-dap not on PATH — the debugger was NOT exercised)" ;;
   *) echo FAIL; fail=1 ;;
 esac
-step "lsp_client_test"; (cd src && "$ZEBRA" lsp_client_test.zbr 2>&1 | tail -1 | grep -q "lsp_client_test: ok") && echo PASS || { echo FAIL; fail=1; }
-step "rename_workspace_test"; (cd src && "$ZEBRA" rename_workspace_test.zbr 2>&1 | tail -1 | grep -q "rename_workspace_test: ok") && echo PASS || { echo FAIL; fail=1; }
+step "lsp_client_test"; expect "lsp_client_test: ok" last "$ZEBRA" lsp_client_test.zbr
+step "rename_workspace_test"; expect "rename_workspace_test: ok" last "$ZEBRA" rename_workspace_test.zbr
 step "cross_lsp_test (clangd + zls)"
 cross_out=$(cd src && "$ZEBRA" cross_lsp_test.zbr 2>&1 | tail -1)
 case "$cross_out" in

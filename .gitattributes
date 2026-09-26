@@ -1,0 +1,6 @@
+# Everything is LF in the repo AND in every checkout. The Zebra tokenizer refuses a carriage
+# return, and actions/checkout on windows-latest runs with core.autocrlf=true, so without
+# this the first Windows CI run failed on every .zbr. Same rule as zebra-language.
+* text=auto eol=lf
+*.png binary
+*.bat text eol=crlf

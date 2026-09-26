@@ -29,6 +29,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      libui_ref:
+        description: "Build against zig-libui-ng at this ref instead of the compiler's pin (proves a libui fix before the pin moves; never used for a release)"
+        required: false
+        default: ""
 
 concurrency:
   group: build-${{ github.ref }}
@@ -79,6 +84,23 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/torial/zebra-language/main/install/install.sh | sh
           echo "$HOME/.zebra/current" >> "$GITHUB_PATH"
           echo "$HOME/.zebra/current/zig" >> "$GITHUB_PATH"
+
+      # Only on a manual run with `libui_ref`: ZEBRA_LIBUI_PATH makes the scaffold point at
+      # this checkout (a relative .path) instead of the compiler's pinned URL.
+      - name: Check out zig-libui-ng at libui_ref (manual override)
+        if: inputs.libui_ref != ''
+        uses: actions/checkout@v5
+        with:
+          repository: torial/zig-libui-ng
+          ref: ${{ inputs.libui_ref }}
+          path: zig-libui-ng-override
+
+      - name: Point the scaffold at the override
+        if: inputs.libui_ref != ''
+        shell: bash
+        run: |
+          echo "ZEBRA_LIBUI_PATH=$GITHUB_WORKSPACE/zig-libui-ng-override" >> "$GITHUB_ENV"
+          echo "::warning::building against zig-libui-ng ${{ inputs.libui_ref }}, NOT the compiler's pin"
 
       - name: Which compiler, which Zig
         shell: bash
