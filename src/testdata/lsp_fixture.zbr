@@ -1,0 +1,23 @@
+# lsp_client_test's document: clean, with `area` defined once and called once, so
+# definition lands on the def line, references find exactly 2, and a rename makes 2 edits.
+# Kept in THIS repo (it was examples/showcase.zbr, found beside the compiler binary --
+# a path that exists in a source checkout and in no installed release).
+union Shape
+    circle: float
+    square: float
+
+def area(s: Shape): float
+    branch s
+        on Shape.circle as r
+            return 3.14159 * r * r
+        on Shape.square as side
+            return side * side
+
+def main()
+    var shapes = List(Shape)()
+    shapes.add(Shape.circle(1.0))
+    shapes.add(Shape.square(2.0))
+    var total: float = 0.0
+    for s in shapes
+        total = total + area(s)
+    print(total)

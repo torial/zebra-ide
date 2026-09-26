@@ -33,11 +33,11 @@ def main()
     assert c.initialized, "client did not mark itself initialized"
     assert c.capabilities.getBool("referencesProvider"), "server capabilities lack referencesProvider"
 
-    # open showcase.zbr (found next to the compiler: <zebra dir>/../../examples/showcase.zbr)
-    var path: str = zebra.replace("\\", "/")
-    var bin_dir: str = path[0..path.lastIndexOf("/")]
-    var src_path: str = bin_dir + "/../../examples/showcase.zbr"
-    assert File.exists(src_path), "showcase.zbr not found at " + src_path
+    # open this repo's fixture (run from src/, as check.sh and the manifest do). It used to
+    # be the compiler's examples/showcase.zbr, found at <zebra dir>/../../examples -- a
+    # path only a source checkout has; CI's installed release failed here (2026-09-26).
+    var src_path: str = sys.cwd().replace("\\", "/") + "/testdata/lsp_fixture.zbr"
+    assert File.exists(src_path), "lsp fixture not found at " + src_path + " (run from src/)"
     var text: str = File.read(src_path)
     var uri: str = "file://" + src_path
     assert c.didOpen(uri, "zebra", 1, text), "didOpen failed"
@@ -49,7 +49,7 @@ def main()
         sys.sleep(50)
         waited = waited + 50
     assert c.diagnostics.get(uri) != nil, "no publishDiagnostics for the opened file"
-    assert c.diagnostics.get(uri)!.len == 0, "showcase.zbr should be clean"
+    assert c.diagnostics.get(uri)!.len == 0, "the lsp fixture should be clean"
 
     # definition / references / rename on `area` at its call site
     var call_line: int = findLine(text, "total + area(s)")
