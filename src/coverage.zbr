@@ -88,16 +88,16 @@ def insertSorted(f: FileCov, line: int, count: int)
 # is one with nothing in it
 def parseCoverage(text: str): CoverageReport?
     if Json.parse(text) as root
-        var files: JsonValue = root.at("files")
+        var files: JsonValue = root.tryObj("files") orelse Json.object()
         var r: CoverageReport = CoverageReport()
         var any: bool = false
         for path in files.keys()
             any = true
             var f: FileCov = FileCov(path)
-            var lines: JsonValue = files.at(path).at("lines")
+            var lines: JsonValue = files.tryObj(path)?.tryObj("lines") orelse Json.object()
             for k in lines.keys()
                 var line: int = k.toInt()
-                var count: int = lines.getInt(k)
+                var count: int = lines.tryInt(k) orelse 0
                 if line > 0
                     insertSorted(f, line, count)
                     if count > 0

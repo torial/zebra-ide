@@ -158,21 +158,21 @@ class DapClient
             .io.log.add("poll: unparseable message dropped")
             return
         var j = jv!
-        var typ: str = j.getStr("type")
+        var typ: str = j.tryStr("type") orelse ""
         if typ == "response"
-            var rs: int = j.getInt("request_seq")
+            var rs: int = j.tryInt("request_seq") orelse 0
             .replies.put(rs, body)
             .pending.remove(rs)
             return
         if typ == "event"
-            var ev: str = j.getStr("event")
+            var ev: str = j.tryStr("event") orelse ""
             if ev == "initialized"
                 .initialized_evt = true
             else if ev == "stopped"
                 .state = "stopped"
-                var b = j.getObj("body")
-                .thread_id = b.getInt("threadId")
-                .stop_reason = b.getStr("reason")
+                var b = j.tryObj("body") orelse Json.object()
+                .thread_id = b.tryInt("threadId") orelse 0
+                .stop_reason = b.tryStr("reason") orelse ""
                 .frames = List(DapFrame)()          # stale until the next stackTrace
             else if ev == "continued"
                 .state = "running"
@@ -180,9 +180,9 @@ class DapClient
                 .state = "ended"
             else if ev == "exited"
                 .state = "ended"
-                .exit_code = j.getObj("body").getInt("exitCode")
+                .exit_code = j.tryObj("body")?.tryInt("exitCode") orelse 0
             else if ev == "output"
-                .output = .output + j.getObj("body").getStr("output")
+                .output = .output + (j.tryObj("body")?.tryStr("output") orelse "")
             else if ev == "process" or ev == "thread" or ev == "module" or ev == "breakpoint"
                 pass
             else
@@ -224,49 +224,32 @@ class DapClient
     # Decode a stackTrace reply into .frames (top first). Returns the count.
     def readFrames(reply: JsonValue): int
         .frames = List(DapFrame)()
-        var res = reply.at("body")
-        if res.isNull()
-            return 0
-        for f in res.getList("stackFrames")
-            var path: str = ""
-            if not f.at("source").isNull()
-                var src = f.getObj("source")
-                if not src.at("path").isNull()
-                    path = src.getStr("path")
-            var col: int = 0
-            if not f.at("column").isNull()
-                col = f.getInt("column")
-            var name: str = f.getStr("name")
+        for f in reply.tryObj("body")?.tryList("stackFrames") orelse List(JsonValue)()
+            var path: str = f.tryObj("source")?.tryStr("path") orelse ""
+            var col: int = f.tryInt("column") orelse 0
+            var name: str = f.tryStr("name") orelse ""
             # the selfhost emits Zebra functions as `_zbr_fn_<name>`; show the Zebra name
             if name.contains("._zbr_fn_")
                 var k: int = name.indexOf("._zbr_fn_")
                 name = name[0..k + 1] + name[k + 9..name.len]
             else if name.startsWith("_zbr_fn_")
                 name = name[8..name.len]
-            .frames.add(DapFrame(id: f.getInt("id"), name: name, path: path, line: f.getInt("line"), col: col))
+            .frames.add(DapFrame(id: f.tryInt("id") orelse 0, name: name, path: path, line: f.tryInt("line") orelse 0, col: col))
         return .frames.len
 
     # Decode a scopes reply. lldb-dap answers Locals / Globals / Registers; Locals is
     # EMPTY for Zig programs (no lldb language plugin), Globals and Registers are real.
     def readScopes(reply: JsonValue): List(DapScope)
         var out: List(DapScope) = List(DapScope)()
-        var res = reply.at("body")
-        if res.isNull()
-            return out
-        for sc in res.getList("scopes")
-            out.add(DapScope(name: sc.getStr("name"), ref: sc.getInt("variablesReference")))
+        for sc in reply.tryObj("body")?.tryList("scopes") orelse List(JsonValue)()
+            out.add(DapScope(name: sc.tryStr("name") orelse "", ref: sc.tryInt("variablesReference") orelse 0))
         return out
 
     def readVariables(reply: JsonValue): List(DapVar)
         var out: List(DapVar) = List(DapVar)()
-        var res = reply.at("body")
-        if res.isNull()
-            return out
-        for v in res.getList("variables")
-            var kind: str = ""
-            if not v.at("type").isNull()
-                kind = v.getStr("type")
-            out.add(DapVar(name: v.getStr("name"), value: v.getStr("value"), kind: kind))
+        for v in reply.tryObj("body")?.tryList("variables") orelse List(JsonValue)()
+            var kind: str = v.tryStr("type") orelse ""
+            out.add(DapVar(name: v.tryStr("name") orelse "", value: v.tryStr("value") orelse "", kind: kind))
         return out
 
     def stop()

@@ -29,10 +29,10 @@ def main()
     assert c.start(zebra, src, exe), "could not start zebra debug"
     var init = c.waitReply(c.initialize(), 90000)      # the relay compiles first (seconds)
     assert init != nil, "no initialize reply; log: " + c.log().join(" | ")
-    assert init!.getBool("success"), "initialize failed"
+    assert init!.tryBool("success") orelse false, "initialize failed"
     c.launch()
     var bp = c.waitReply(c.setBreakpoints(sys.cwd() + "/" + src, [2]), 30000)
-    assert bp != nil and bp!.getBool("success"), "setBreakpoints failed"
+    assert bp != nil and (bp!.tryBool("success") orelse false), "setBreakpoints failed"
     c.configurationDone()
     assert c.waitState("stopped", 30000), "program did not stop at the breakpoint; state=" + c.state + " out=" + c.output
     assert c.stop_reason == "breakpoint", "expected a breakpoint stop, got " + c.stop_reason

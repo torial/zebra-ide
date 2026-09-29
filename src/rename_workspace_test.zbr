@@ -84,7 +84,7 @@ def main()
     open_uris.add(main_uri)
     var rn = c.waitReply(c.rename(main_uri, call_line, call_col, "surface"), 8000)
     assert rn != nil, "no rename reply; log: " + c.log().join(" | ")
-    var changes = rn!.getObj("result").getObj("changes")
+    var changes = rn!.tryObj("result")?.tryObj("changes") orelse Json.object()
     var uris: List(str) = changes.keys()
     assert uris.contains(main_uri), "no edits for the open file"
     assert uris.contains(geo_uri), "no edits for the UNOPENED module geo.zbr — the server did not resolve the `use` graph: " + uris.join(",")

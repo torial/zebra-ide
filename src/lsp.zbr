@@ -61,10 +61,10 @@ def rangeJson(line: int, col: int): str
     return "{\"line\":" + line.toString() + ",\"character\":" + col.toString() + "}"
 
 def locationFrom(v: JsonValue): LspLocation
-    var rng = v.getObj("range")
-    var s = rng.getObj("start")
-    var e = rng.getObj("end")
-    return LspLocation(v.getStr("uri"), s.getInt("line"), s.getInt("character"), e.getInt("line"), e.getInt("character"))
+    var rng = v.tryObj("range") orelse Json.object()
+    var s = rng.tryObj("start") orelse Json.object()
+    var e = rng.tryObj("end") orelse Json.object()
+    return LspLocation(v.tryStr("uri") orelse "", s.tryInt("line") orelse 0, s.tryInt("character") orelse 0, e.tryInt("line") orelse 0, e.tryInt("character") orelse 0)
 
 class LspClient
     var name: str = ""
@@ -174,28 +174,27 @@ class LspClient
             .io.log.add("poll: unparseable message dropped")
             return
         var j = jv!
-        if not j.at("id").isNull() and j.at("method").isNull()
+        var reply_id = j.tryInt("id")
+        if reply_id != nil and j.tryStr("method") == nil
             # A reply (result or error) to one of our requests.
-            var id: int = j.getInt("id")
+            var id: int = reply_id!
             .replies.put(id, body)
             if .pending.get(id) as m
                 if m == "initialize"
                     .initialized = true
-                    .capabilities = j.getObj("result").getObj("capabilities")
+                    .capabilities = j.tryObj("result")?.tryObj("capabilities") orelse Json.object()
                     .notify("initialized", "{}")
             .pending.remove(id)
             return
-        var method: str = j.getStr("method")
+        var method: str = j.tryStr("method") orelse ""
         if method == "textDocument/publishDiagnostics"
-            var params = j.getObj("params")
-            var uri: str = params.getStr("uri")
+            var params = j.tryObj("params") orelse Json.object()
+            var uri: str = params.tryStr("uri") orelse ""
             var ds: List(LspDiagnostic) = List(LspDiagnostic)()
-            for d in params.getList("diagnostics")
-                var sev: int = 1
-                if not d.at("severity").isNull()
-                    sev = d.getInt("severity")
+            for d in params.tryList("diagnostics") orelse List(JsonValue)()
+                var sev: int = d.tryInt("severity") orelse 1
                 var loc: LspLocation = locationFrom(d)     # uri absent on a Diagnostic; only the range is used
-                ds.add(LspDiagnostic(uri, loc.line, loc.col, loc.end_line, loc.end_col, sev, d.getStr("message")))
+                ds.add(LspDiagnostic(uri, loc.line, loc.col, loc.end_line, loc.end_col, sev, d.tryStr("message") orelse ""))
             .diagnostics.put(uri, ds)
             return
         .notifications.add(body)
@@ -224,14 +223,11 @@ class LspClient
     # Decode a Location | Location[] | null result into a list.
     def locations(reply: JsonValue): List(LspLocation)
         var out: List(LspLocation) = List(LspLocation)()
-        var res = reply.at("result")
-        if res.isNull()
-            return out
-        if res.isArray()
-            for v in reply.getList("result")
+        if reply.tryList("result") as arr
+            for v in arr
                 out.add(locationFrom(v))
-        else
-            out.add(locationFrom(res))
+        else if reply.tryObj("result") as one
+            out.add(locationFrom(one))
         return out
 
     def stop()

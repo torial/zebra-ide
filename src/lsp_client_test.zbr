@@ -31,7 +31,7 @@ def main()
     var init = c.waitReply(init_id, 5000)
     assert init != nil, "no initialize reply; log: " + c.log().join(" | ")
     assert c.initialized, "client did not mark itself initialized"
-    assert c.capabilities.getBool("referencesProvider"), "server capabilities lack referencesProvider"
+    assert c.capabilities.tryBool("referencesProvider") orelse false, "server capabilities lack referencesProvider"
 
     # open this repo's fixture (run from src/, as check.sh and the manifest do). It used to
     # be the compiler's examples/showcase.zbr, found at <zebra dir>/../../examples -- a
@@ -75,7 +75,7 @@ def main()
     var rn = c.waitReply(c.rename(uri, call_line, call_col, "surface"), 5000)
     assert rn != nil, "no rename reply"
     var n_edits: int = 0
-    for e in rn!.getObj("result").getObj("changes").getList(uri)
+    for e in rn!.tryObj("result")?.tryObj("changes")?.tryList(uri) orelse List(JsonValue)()
         n_edits = n_edits + 1
     assert n_edits == 2, "rename should produce 2 edits, got " + n_edits.toString()
 

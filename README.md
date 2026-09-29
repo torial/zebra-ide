@@ -11,8 +11,10 @@ reporting `zebra lsp` connected -- checklist item 1 and the first half of item 2
 Everything interactive (typing, squiggles, keys, debugging, rename) has still not been
 exercised on Windows; the checklist is written for that.
 
-It needs Zebra **0.9.0-rc4 or newer** (rc1/rc2 lack the toolbar, hotkeys and tree it
-uses). From a source build that means current `main`.
+It needs Zebra **0.9.0-rc6 or newer**: rc6 replaced the JSON getters the LSP, DAP and gates
+code read their messages with (`j.tryStr("k") orelse ""` and friends; BUG-331), and rc1/rc2
+lack the toolbar, hotkeys and tree it
+uses. From a source build that means current `main`.
 
 **On Linux, use 0.9.0-rc4 or newer.** rc3 pinned a zig-libui-ng whose GTK Scintilla notify
 handler trips Zig's UBSan function-type check, so the IDE -- like every libui_ng program with

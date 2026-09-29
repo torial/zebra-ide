@@ -1219,7 +1219,7 @@ def pollDebug(m: Model)
             var got_init: bool = false
             for k in c.replies.keys()
                 if c.takeReply(k) as r
-                    if r.getStr("command") == "initialize"
+                    if (r.tryStr("command") orelse "") == "initialize"
                         got_init = true
             if got_init
                 c.launch()
@@ -1412,11 +1412,10 @@ def tick(m: Model)
     if m.rename_id != 0
         if rc.takeReply(m.rename_id) as r
             m.rename_id = 0
-            var res = r.at("result")
-            if res.isNull() or res.at("changes").isNull()
-                m.status = "rename: server returned no edits"
+            if r.tryObj("result")?.tryObj("changes") as changes
+                m.status = applyWorkspaceEdit(m, changes)
             else
-                m.status = applyWorkspaceEdit(m, res.getObj("changes"))
+                m.status = "rename: server returned no edits"
 
 def update(m: Model, msg: Msg): Model
     branch msg

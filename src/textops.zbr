@@ -23,13 +23,13 @@ def applyEdits(text: str, edits: JsonValue, uri: str): str
     var starts: List(int) = List(int)()
     var ends: List(int) = List(int)()
     var news: List(str) = List(str)()
-    for e in edits.getList(uri)
-        var rng = e.getObj("range")
-        var s = rng.getObj("start")
-        var en = rng.getObj("end")
-        starts.add(offs.at(s.getInt("line")) + s.getInt("character"))
-        ends.add(offs.at(en.getInt("line")) + en.getInt("character"))
-        news.add(e.getStr("newText"))
+    for e in edits.tryList(uri) orelse List(JsonValue)()
+        var rng = e.tryObj("range") orelse Json.object()
+        var s = rng.tryObj("start") orelse Json.object()
+        var en = rng.tryObj("end") orelse Json.object()
+        starts.add(offs.at(s.tryInt("line") orelse 0) + (s.tryInt("character") orelse 0))
+        ends.add(offs.at(en.tryInt("line") orelse 0) + (en.tryInt("character") orelse 0))
+        news.add(e.tryStr("newText") orelse "")
     var order: List(int) = List(int)()
     var k: int = 0
     while k < starts.len
@@ -69,13 +69,13 @@ def symbolLines(reply: JsonValue, lines: List(int)): str
     # Returns the pane text. (Was a BUG-342 workaround; a StringBuilder parameter
     # works since 09-08, but returning the text is the cleaner contract, so it stays.)
     var sink = StringBuilder()
-    for s in reply.getList("result")
+    for s in reply.tryList("result") orelse List(JsonValue)()
         var line: int = 0
-        if not s.at("location").isNull()
-            line = s.getObj("location").getObj("range").getObj("start").getInt("line")
+        if s.tryObj("location") as loc
+            line = loc.tryObj("range")?.tryObj("start")?.tryInt("line") orelse 0
         else
-            line = s.getObj("range").getObj("start").getInt("line")
-        sink.append((line + 1).toString() + ": " + s.getStr("name") + "\n")
+            line = s.tryObj("range")?.tryObj("start")?.tryInt("line") orelse 0
+        sink.append((line + 1).toString() + ": " + (s.tryStr("name") orelse "") + "\n")
         lines.add(line)
     return sink.build()
 

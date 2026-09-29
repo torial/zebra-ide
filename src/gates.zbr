@@ -126,50 +126,26 @@ def jsonStr(v: JsonValue): str
 
 def specFrom(j: JsonValue, root: str): GateSpec
     var argv: List(str) = List(str)()
-    for a in j.getList("cmd")
+    for a in j.tryList("cmd") orelse List(JsonValue)()
         argv.add(jsonStr(a))
-    var cwd: str = "."
-    if not j.at("cwd").isNull()
-        cwd = j.getStr("cwd")
-    var expect: str = ""
-    if not j.at("expect").isNull()
-        expect = j.getStr("expect")
-    var skip: str = ""
-    if not j.at("skip").isNull()
-        skip = j.getStr("skip")
-    var timeout: int = 600000
-    if not j.at("timeout_ms").isNull()
-        timeout = j.getInt("timeout_ms")
-    var name: str = ""
-    if not j.at("name").isNull()
-        name = j.getStr("name")
+    var cwd: str = j.tryStr("cwd") orelse "."
+    var expect: str = j.tryStr("expect") orelse ""
+    var skip: str = j.tryStr("skip") orelse ""
+    var timeout: int = j.tryInt("timeout_ms") orelse 600000
+    var name: str = j.tryStr("name") orelse ""
     return GateSpec(name: name, argv: argv, cwd: joinPath(root, cwd), expect: expect, skip: skip, timeout_ms: timeout, tag: "")
 
 def toolFrom(j: JsonValue, root: str): ToolSpec
     var argv: List(str) = List(str)()
-    for a in j.getList("cmd")
+    for a in j.tryList("cmd") orelse List(JsonValue)()
         argv.add(jsonStr(a))
-    var name: str = ""
-    if not j.at("name").isNull()
-        name = j.getStr("name")
-    var label: str = name
-    if not j.at("label").isNull()
-        label = j.getStr("label")
-    var cwd: str = "."
-    if not j.at("cwd").isNull()
-        cwd = j.getStr("cwd")
-    var event: str = ""
-    if not j.at("on").isNull()
-        event = j.getStr("on")
-    var reload: bool = false
-    if not j.at("reload").isNull()
-        reload = j.getBool("reload")
-    var diags: bool = false
-    if not j.at("diags").isNull()
-        diags = j.getBool("diags")
-    var timeout: int = 600000
-    if not j.at("timeout_ms").isNull()
-        timeout = j.getInt("timeout_ms")
+    var name: str = j.tryStr("name") orelse ""
+    var label: str = j.tryStr("label") orelse name
+    var cwd: str = j.tryStr("cwd") orelse "."
+    var event: str = j.tryStr("on") orelse ""
+    var reload: bool = j.tryBool("reload") orelse false
+    var diags: bool = j.tryBool("diags") orelse false
+    var timeout: int = j.tryInt("timeout_ms") orelse 600000
     return ToolSpec(name: name, label: label, argv: argv, cwd: joinPath(root, cwd), event: event, reload: reload, diags: diags, timeout_ms: timeout)
 
 # Does the tool name the current file in any form? `${dir}` `${stem}` `${root}` derive
@@ -250,23 +226,17 @@ def loadManifest(path: str): Manifest?
     var j = jv!
     var m = Manifest()
     m.root = dirOf(path)
-    if not j.at("name").isNull()
-        m.name = j.getStr("name")
-    if not j.at("build").isNull()
-        var b: GateSpec = specFrom(j.getObj("build"), m.root)
+    m.name = j.tryStr("name") orelse m.name
+    if j.tryObj("build") as bj
+        var b: GateSpec = specFrom(bj, m.root)
         if b.name == ""
             b = GateSpec(name: "build", argv: b.argv, cwd: b.cwd, expect: b.expect, skip: b.skip, timeout_ms: b.timeout_ms, tag: "")
         m.build = b
-    if not j.at("gates").isNull()
-        for g in j.getList("gates")
-            m.gates.add(specFrom(g, m.root))
-    if not j.at("tools").isNull()
-        for t in j.getList("tools")
-            m.tools.add(toolFrom(t, m.root))
-    if not j.at("tests").isNull()
-        var tj: JsonValue = j.getObj("tests")
-        if not tj.at("on_save").isNull()
-            m.tests_on_save = tj.getBool("on_save")
+    for g in j.tryList("gates") orelse List(JsonValue)()
+        m.gates.add(specFrom(g, m.root))
+    for t in j.tryList("tools") orelse List(JsonValue)()
+        m.tools.add(toolFrom(t, m.root))
+    m.tests_on_save = j.tryObj("tests")?.tryBool("on_save") orelse m.tests_on_save
     return m
 
 # ── Diagnostic lines ─────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@
 # the zebra-language README teaches -- not the compiler's main branch. A user of the IDE
 # installs the release, so this goes red when the IDE starts depending on something no
 # release has yet; that is the signal to cut a compiler release, or to say in the README
-# which version is needed. (The IDE's own README pins the floor: 0.9.0-rc4.)
+# which version is needed. (The IDE's own README pins the floor: 0.9.0-rc6.)
 # `workflow_dispatch` takes an optional `zebra_version` (a tag such as
 # v0.9.0-rc4_zig0.16) to check against a specific release instead.
 #
