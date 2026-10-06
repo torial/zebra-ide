@@ -136,7 +136,25 @@ installer), so they go red when the IDE starts needing something no release has.
 | workflow | runs on | what it proves | what it cannot |
 |---|---|---|---|
 | `check.yml` | every push / PR; Windows + Linux | `tools/check.sh`: every headless test, the tui compile, and the libui_ng shape compiled against zig-libui-ng **at the SHA the compiler pins** | the debugger (`dap_client_test` SKIPs: no lldb-dap) and C/Zig LSP (`cross_lsp_test` SKIPs: no clangd/zls) |
-| `build.yml` | every push / PR, and `v*` tags | the real libui_ng IDE builds (ReleaseSafe) and is still running 15 s after launch (Xvfb on Linux); archives kept as artifacts; on a tag, attached to a GitHub release with `SHA256SUMS.txt` | anything past startup: a hang passes, and nothing clicks, types or looks at the window |
+| `build.yml` | every push / PR, and `v*` tags | the real libui_ng IDE builds (ReleaseSafe) and is still running 15 s after launch (Xvfb on Linux); packaged as an archive **and an installer** per platform (Inno Setup `setup.exe`, `.deb`), and each installer is installed on its runner, the installed copy started the same way, then uninstalled (the Windows leg also checks the PATH entry comes and goes). A push to `master` replaces the **`dev` prerelease** with these files; a tag attaches them to a GitHub release with `SHA256SUMS.txt` | anything past startup: a hang passes, and nothing clicks, types or looks at the window; the installers' interactive pages (the finish-page note when `zebra` is missing) are never seen by CI |
+
+**Downloads.** The newest green `master` build is always the `dev` prerelease on the
+Releases page (no GitHub login needed); tagged releases are the real ones.
+- **Windows:** `zebra-ide-<version>-windows-x86_64-setup.exe` installs per-user by default
+  (an all-users install when run elevated), adds a Start-menu entry and an uninstaller, and
+  -- a task, on by default -- puts the install folder on PATH. The `.zip` is the same
+  executable without an installer.
+- **Linux:** `sudo apt install ./zebra-ide-<version>-linux-x86_64.deb` installs
+  `/usr/bin/zebra-ide` and a desktop entry; its dependencies are derived from the binary
+  (GTK 3 and friends). The `.tar.gz` is the bare executable.
+- Neither installs Zebra. The IDE needs `zebra` (0.9.0-rc6 or newer) on PATH at run time.
+- The project is the folder the IDE starts in, so the useful way to start it is from a
+  terminal in your project: `zebra-ide`. The Start-menu / desktop entries start it in
+  Documents / your home folder.
+
+Packaging sources: `packaging/windows/zebra-ide.iss`, `packaging/linux/`; the start-up
+check both use is `tools/ci/stays_up.{sh,ps1}` (with its control: a program that exits at
+once must read as exited).
 
 To release: tag `v<version>` (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
 `workflow_dispatch` on `check.yml` accepts a Zebra tag to check against a specific release.

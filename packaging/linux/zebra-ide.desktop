@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=zebra-ide
+GenericName=Zebra IDE
+Comment=Editor and IDE for the Zebra programming language
+Exec=zebra-ide %F
+Icon=accessories-text-editor
+Terminal=false
+Categories=Development;IDE;TextEditor;

@@ -1,6 +1,10 @@
 # Build the IDE itself (the libui_ng backend: a real window, Scintilla editors) for Windows
-# and Linux, prove each binary STARTS, and keep it as a downloadable artifact. On a `v*`
-# tag the same binaries are attached to a GitHub release.
+# and Linux, prove each binary STARTS, package it (an archive plus an installer per
+# platform: Inno Setup setup.exe, .deb), INSTALL each installer on its runner and start the
+# installed copy, and keep everything as artifacts. Every push to master replaces the `dev`
+# prerelease with these files; a `v*` tag attaches them to a real GitHub release.
+# Packaging sources: packaging/windows/zebra-ide.iss, packaging/linux/. The start-up
+# harness: tools/ci/stays_up.{sh,ps1}.
 #
 # What "starts" means here, since no job can look at a window: the program is launched
 # (under Xvfb on Linux) and must still be running 15 s later. That catches the class the
@@ -53,11 +57,13 @@ jobs:
             exe: app.exe
             out: zebra-ide.exe
             pack: zip
+            installer: -setup.exe
           - os: ubuntu-latest
             plat: linux-x86_64
             exe: app
             out: zebra-ide
             pack: tar.gz
+            installer: .deb
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -114,8 +120,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::8}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            deb=$(printf '%s' "$v" | tr - '~')   # 0.2.0-rc1 -> 0.2.0~rc1, which sorts before 0.2.0
+          else
+            v="dev-${GITHUB_SHA::8}"
+            deb="0.0.0~dev.${GITHUB_RUN_NUMBER}+${GITHUB_SHA::8}"
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "deb_version=$deb" >> "$GITHUB_OUTPUT"
           echo "name=zebra-ide-$v-${{ matrix.plat }}" >> "$GITHUB_OUTPUT"
 
       # --scaffold-only writes the zig project (build.zig, the pinned build.zig.zon, the
@@ -140,56 +153,18 @@ jobs:
           ls -l zig-out/bin/
           test -f "zig-out/bin/${{ matrix.exe }}"
 
+      # The start-up check (and its control) lives in tools/ci/stays_up.{sh,ps1}, so the
+      # built binary and the INSTALLED one below are judged by the same harness.
       - name: Starts and stays up (Linux, Xvfb)
         if: runner.os == 'Linux'
         working-directory: src/ide_gui_libui_ng
-        run: |
-          # stays_up CMD...: 0 if CMD was still running at 15 s (timeout had to stop it,
-          # rc 124), 1 if it exited on its own. The CONTROL runs first: a program that
-          # exits at once must be classified as exited, or this harness cannot tell the
-          # two apart and its "startup OK" would mean nothing.
-          stays_up() { set +e; xvfb-run -a timeout 15 "$@" > run.log 2>&1; rc=$?; set -e; [ "$rc" = 124 ]; }
-          if stays_up sh -c 'exit 3'; then
-            echo "::error::harness control failed: a program that exits at once was reported as still running"
-            exit 2
-          fi
-          echo "control: an immediately-exiting program is reported as exited (ok)"
-          if ! stays_up ./zig-out/bin/app; then
-            cat run.log
-            echo "::error::the IDE exited with rc=$rc within 15 s of starting (expected to still be running)"
-            exit 1
-          fi
-          cat run.log
-          echo "still running after 15 s: no crash at startup"
+        run: bash "$GITHUB_WORKSPACE/tools/ci/stays_up.sh" run.log ./zig-out/bin/app
 
       - name: Starts and stays up (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: src/ide_gui_libui_ng
-        run: |
-          # Returns $true if the program was still running after 15 s. The CONTROL runs
-          # first (see the Linux step): an immediately-exiting program must read as exited.
-          function StaysUp([string]$exe, [string[]]$argv) {
-            $a = @{ FilePath = $exe; PassThru = $true; RedirectStandardOutput = 'run.out'; RedirectStandardError = 'run.err' }
-            if ($argv) { $a.ArgumentList = $argv }
-            $p = Start-Process @a
-            Start-Sleep -Seconds 15
-            $alive = -not $p.HasExited
-            if ($alive) { Stop-Process -Id $p.Id -Force } else { $script:rc = $p.ExitCode }
-            return $alive
-          }
-          if (StaysUp 'cmd.exe' @('/c', 'exit 3')) {
-            Write-Host "::error::harness control failed: a program that exits at once was reported as still running"
-            exit 2
-          }
-          Write-Host "control: an immediately-exiting program is reported as exited (ok)"
-          $up = StaysUp '.\zig-out\bin\app.exe' $null
-          Get-Content run.out, run.err -ErrorAction SilentlyContinue
-          if (-not $up) {
-            Write-Host "::error::the IDE exited with rc=$script:rc within 15 s of starting (expected to still be running)"
-            exit 1
-          }
-          Write-Host "still running after 15 s: no crash at startup"
+        run: '& "$env:GITHUB_WORKSPACE\tools\ci\stays_up.ps1" -Exe ".\zig-out\bin\app.exe"; exit $LASTEXITCODE'
 
       - name: Package
         shell: bash
@@ -218,10 +193,77 @@ jobs:
           fi
           ls -l
 
+      # ── Installers ─────────────────────────────────────────────────────────────────
+      # Each is built from the binary that just passed the start-up check, then INSTALLED
+      # on the runner the way a user would, started from where it was installed, and
+      # removed again -- an installer is only proven by installing it.
+      - name: Installer (Windows, Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          if (-not (Test-Path $iscc)) { Write-Host "::error::ISCC.exe not found after installing Inno Setup"; exit 1 }
+          & $iscc /Qp "/DAppVersion=${{ steps.ver.outputs.version }}" `
+            "/DSourceExe=$env:GITHUB_WORKSPACE\src\ide_gui_libui_ng\zig-out\bin\app.exe" `
+            "/DRepoDir=$env:GITHUB_WORKSPACE" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" `
+            "/DOutputBase=${{ steps.ver.outputs.name }}-setup" packaging\windows\zebra-ide.iss
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::ISCC exited $LASTEXITCODE"; exit 1 }
+          Get-Item "dist\${{ steps.ver.outputs.name }}-setup.exe"
+
+      - name: The installer installs, starts, and uninstalls cleanly (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = "dist\${{ steps.ver.outputs.name }}-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'zebra-ide-installed'
+          $log = Join-Path $env:RUNNER_TEMP 'setup.log'
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList `
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/TASKS=addtopath', "/DIR=$dir", "/LOG=$log"
+          if ($p.ExitCode -ne 0) { Get-Content $log; Write-Host "::error::setup exited $($p.ExitCode)"; exit 1 }
+          $exe = Join-Path $dir 'zebra-ide.exe'
+          function OnUserPath { ((Get-ItemProperty 'HKCU:\Environment').Path -split ';') -contains $dir }
+          if (-not (Test-Path $exe)) { Get-Content $log; Write-Host "::error::no $exe after install"; exit 1 }
+          if (-not (OnUserPath)) { Write-Host "::error::the install folder is not on the user PATH after /TASKS=addtopath"; exit 1 }
+          Write-Host "installed $exe; its folder is on the user PATH"
+
+          & "$env:GITHUB_WORKSPACE\tools\ci\stays_up.ps1" -Exe $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # The uninstaller re-launches itself from TEMP and returns at once, so -Wait does
+          # not wait for the removal: poll for its effects instead.
+          Start-Process (Join-Path $dir 'unins000.exe') -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          $deadline = (Get-Date).AddSeconds(90)
+          while (((Test-Path $exe) -or (OnUserPath)) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $exe) { Write-Host "::error::zebra-ide.exe still present 90 s after uninstalling"; exit 1 }
+          if (OnUserPath) { Write-Host "::error::the install folder is still on the user PATH after uninstalling"; exit 1 }
+          Write-Host "uninstalled: the exe and the PATH entry are gone"
+
+      - name: Installer (Linux, .deb)
+        if: runner.os == 'Linux'
+        run: bash packaging/linux/build_deb.sh src/ide_gui_libui_ng/zig-out/bin/app "${{ steps.ver.outputs.deb_version }}" "dist/${{ steps.ver.outputs.name }}.deb"
+
+      - name: The .deb installs, starts, and removes cleanly (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          desktop-file-validate packaging/linux/zebra-ide.desktop
+          sudo apt-get install -y "./dist/${{ steps.ver.outputs.name }}.deb"
+          dpkg -L zebra-ide
+          echo "on PATH: $(command -v zebra-ide)"
+          cd "$RUNNER_TEMP"
+          bash "$GITHUB_WORKSPACE/tools/ci/stays_up.sh" run.log zebra-ide
+          sudo apt-get remove -y zebra-ide
+          if command -v zebra-ide; then echo "::error::zebra-ide is still on PATH after apt-get remove"; exit 1; fi
+          echo "removed: zebra-ide is gone from PATH"
+
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.ver.outputs.name }}
-          path: dist/${{ steps.ver.outputs.name }}.${{ matrix.pack }}
+          path: |
+            dist/${{ steps.ver.outputs.name }}.${{ matrix.pack }}
+            dist/${{ steps.ver.outputs.name }}${{ matrix.installer }}
           if-no-files-found: error
 
   release:
@@ -241,11 +283,11 @@ jobs:
         run: |
           set -euo pipefail
           ls -l
+          # Two platforms, an archive and an installer each; a release carrying fewer is
+          # not the release the tag names.
+          [ "$(ls zebra-ide-* | wc -l)" = 4 ] || { echo "::error::expected 4 packages (zip, setup.exe, tar.gz, deb)"; exit 1; }
           sha256sum zebra-ide-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          # Two platforms were built; a release carrying fewer is not the release the
-          # tag names.
-          [ "$(ls zebra-ide-* | wc -l)" = 2 ] || { echo "::error::expected 2 packages"; exit 1; }
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -254,7 +296,55 @@ jobs:
             dist/SHA256SUMS.txt
           generate_release_notes: true
           body: |
-            One executable per platform. It needs Zebra **0.9.0-rc6 or newer** on PATH at run
-            time (`zebra lsp`, builds, `zebra debug`); see INSTALL.txt in the archive.
-            Built with ReleaseSafe; each binary was launched on its runner and stayed up for
-            15 s. Nothing automated has clicked in it -- see the README's checklist.
+            **Windows:** `zebra-ide-…-windows-x86_64-setup.exe` (per-user install, Start menu,
+            optional PATH entry, uninstaller) or the `.zip`. **Linux:** `zebra-ide-…-linux-x86_64.deb`
+            (`sudo apt install ./zebra-ide-….deb`) or the `.tar.gz`.
+
+            It needs Zebra **0.9.0-rc6 or newer** on PATH at run time (`zebra lsp`, builds,
+            `zebra debug`); see INSTALL.txt. Start it from a project folder: that folder is
+            the project. Built with ReleaseSafe; each binary was launched on its runner and
+            stayed up for 15 s, and each installer was installed, launched from where it
+            installed, and removed. Nothing automated has clicked in it -- see the README's
+            checklist.
+
+  # The latest green master build, downloadable without a GitHub login: a prerelease named
+  # `dev`, REPLACED on every push to master (deleted with its tag, then re-created at this
+  # commit). It is never marked latest, so the repository's "Latest release" stays the
+  # newest `v*` tag.
+  dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: dev-prerelease
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -l
+          [ "$(ls zebra-ide-* | wc -l)" = 4 ] || { echo "::error::expected 4 packages (zip, setup.exe, tar.gz, deb)"; exit 1; }
+          sha256sum zebra-ide-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Replace the dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view dev > /dev/null 2>&1; then
+            gh release delete dev --cleanup-tag --yes
+          fi
+          gh release create dev dist/zebra-ide-* dist/SHA256SUMS.txt \
+            --prerelease --latest=false --target "$GITHUB_SHA" \
+            --title "Development build (master @ ${GITHUB_SHA::8})" \
+            --notes "The newest green build of master ($GITHUB_SHA), replaced on every push. Not a release: for those, see the \`v*\` tags. Needs Zebra 0.9.0-rc6 or newer on PATH. Each binary and installer was started on its runner and stayed up for 15 s; nothing automated has clicked in it."
