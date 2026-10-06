@@ -39,9 +39,12 @@ on:
         required: false
         default: ""
 
+# A newer push cancels an older run of the same branch or PR -- except on master, whose run
+# ends by REPLACING the `dev` prerelease (delete, then create): cancelled between the two it
+# would leave no dev build at all. Master runs queue instead.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
