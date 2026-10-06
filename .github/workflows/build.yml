@@ -176,7 +176,7 @@ jobs:
           name="${{ steps.ver.outputs.name }}"
           mkdir -p "dist/$name"
           cp "src/ide_gui_libui_ng/zig-out/bin/${{ matrix.exe }}" "dist/$name/${{ matrix.out }}"
-          cp README.md "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
           cat > "dist/$name/INSTALL.txt" <<EOF
           zebra-ide ${{ steps.ver.outputs.version }} (${{ matrix.plat }})
 

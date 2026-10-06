@@ -61,6 +61,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "zebra-ide.exe"; Flags: ignoreversion
 Source: "{#RepoDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepoDir}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\zebra-ide"; Filename: "{app}\zebra-ide.exe"; WorkingDir: "{userdocs}"

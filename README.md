@@ -239,3 +239,8 @@ To release: tag `v<version>` (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
   failed at f.zbr:NN` gives the jump line. (`assert_eq` / `assert_true` are not Zebra
   any more: write `assert a == b`.) `"tests": { "on_save": true }` in the manifest runs the saved
   file's tests on every Ctrl+S. Only `.zbr` files; a file with no tests says so.
+
+## License
+
+MIT -- see `LICENSE`. Every package carries it (the archives, the Windows install folder
+as `LICENSE.txt`, and `/usr/share/doc/zebra-ide/copyright` in the .deb).

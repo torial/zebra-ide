@@ -30,6 +30,7 @@ trap 'rm -rf "$root" "$work"' EXIT
 install -Dm755 "$bin" "$root/usr/bin/zebra-ide"
 install -Dm644 packaging/linux/zebra-ide.desktop "$root/usr/share/applications/zebra-ide.desktop"
 install -Dm644 README.md "$root/usr/share/doc/zebra-ide/README.md"
+install -Dm644 LICENSE "$root/usr/share/doc/zebra-ide/copyright"
 
 mkdir -p "$work/debian"
 printf 'Source: zebra-ide\n\nPackage: zebra-ide\nArchitecture: amd64\n' > "$work/debian/control"
